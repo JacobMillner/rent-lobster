@@ -169,13 +169,27 @@ def build_craigslist_crawler(
         if neighborhood:
             neighborhood = neighborhood.strip("() \n\t") or None
 
+        all_image_urls: list[str] = []
+
+        imgs = await context.page.eval_on_selector_all(
+            'img[src*="images.craigslist.org"]',
+            "els => els.map(e => e.src).filter(Boolean)",
+        )
+        if imgs:
+            all_image_urls = list(dict.fromkeys(imgs))
+
+        thumb_links = await context.page.eval_on_selector_all(
+            '#thumbs a[href*="images.craigslist.org"]',
+            "els => els.map(e => e.href).filter(Boolean)",
+        )
+        if thumb_links:
+            for tl in thumb_links:
+                if tl not in all_image_urls:
+                    all_image_urls.append(tl)
+
         thumbnail = await context.page.get_attribute('meta[property="og:image"]', "content")
-        if not thumbnail:
-            imgs = await context.page.eval_on_selector_all(
-                'img[src*="images.craigslist.org"]',
-                "els => els.map(e => e.src).filter(Boolean)",
-            )
-            thumbnail = imgs[0] if imgs else None
+        if not thumbnail and all_image_urls:
+            thumbnail = all_image_urls[0]
 
         description = None
         try:
@@ -254,6 +268,7 @@ def build_craigslist_crawler(
             neighborhood=neighborhood,
             address=title.strip() or None,
             thumbnail_url=thumbnail,
+            image_urls=all_image_urls,
             sqft=sqft,
             description=description,
             contact_name=amenities.get("contact_name"),

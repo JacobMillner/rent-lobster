@@ -251,6 +251,7 @@ def build_zillow_crawler(
         address = None
         thumbnail = None
         description = None
+        all_image_urls: list[str] = []
 
         try:
             json_ld = await page.evaluate("""() => {
@@ -294,11 +295,24 @@ def build_zillow_crawler(
             addr_obj = json_ld.get("address", {})
             if isinstance(addr_obj, dict):
                 neighborhood = addr_obj.get("addressLocality")
-            thumbnail = json_ld.get("image")
-            if isinstance(thumbnail, dict):
-                thumbnail = thumbnail.get("image") or thumbnail.get("url")
-            if isinstance(thumbnail, list):
-                thumbnail = thumbnail[0] if thumbnail else None
+
+            ld_image = json_ld.get("image")
+            if isinstance(ld_image, list):
+                for img_item in ld_image:
+                    if isinstance(img_item, str) and img_item not in all_image_urls:
+                        all_image_urls.append(img_item)
+                    elif isinstance(img_item, dict):
+                        u = img_item.get("url") or img_item.get("image")
+                        if u and u not in all_image_urls:
+                            all_image_urls.append(u)
+            elif isinstance(ld_image, dict):
+                u = ld_image.get("image") or ld_image.get("url")
+                if u and u not in all_image_urls:
+                    all_image_urls.append(u)
+            elif isinstance(ld_image, str) and ld_image not in all_image_urls:
+                all_image_urls.append(ld_image)
+            thumbnail = all_image_urls[0] if all_image_urls else None
+
             floor_size = json_ld.get("floorSize")
             if isinstance(floor_size, dict):
                 try:
@@ -335,10 +349,25 @@ def build_zillow_crawler(
         if not thumbnail:
             try:
                 thumbnail = await page.get_attribute('meta[property="og:image"]', "content")
+                if thumbnail and thumbnail not in all_image_urls:
+                    all_image_urls.insert(0, thumbnail)
             except Exception:
                 pass
         if not address:
             address = title.split("|")[0].strip() if title else None
+
+        try:
+            gallery_imgs = await page.eval_on_selector_all(
+                '[class*="media-stream"] img[src], [class*="MediaStream"] img[src], '
+                '[data-testid*="photo"] img[src], [class*="carousel"] img[src], '
+                '[class*="gallery"] img[src]',
+                "els => els.map(e => e.src).filter(Boolean)",
+            )
+            for gi in (gallery_imgs or []):
+                if gi not in all_image_urls:
+                    all_image_urls.append(gi)
+        except Exception:
+            pass
 
         # Neighborhood from DOM
         if not neighborhood:
@@ -421,6 +450,7 @@ def build_zillow_crawler(
             address=address,
             neighborhood=neighborhood,
             thumbnail_url=thumbnail,
+            image_urls=list(dict.fromkeys(all_image_urls)),
             sqft=sqft,
             description=description,
             contact_name=contact_name,
@@ -514,18 +544,25 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
 
         description = item.get("description")
 
+        all_image_urls: list[str] = []
         thumbnail = None
-        photo = item.get("photo")
-        if isinstance(photo, dict):
-            thumbnail = photo.get("image") or photo.get("url")
-        elif isinstance(photo, str):
-            thumbnail = photo
-        if not thumbnail:
-            img = item.get("image")
-            if isinstance(img, list):
-                thumbnail = img[0] if img else None
-            elif isinstance(img, str):
-                thumbnail = img
+        for img_field in ("photo", "image"):
+            raw = item.get(img_field)
+            if isinstance(raw, list):
+                for img_item in raw:
+                    if isinstance(img_item, str) and img_item not in all_image_urls:
+                        all_image_urls.append(img_item)
+                    elif isinstance(img_item, dict):
+                        u = img_item.get("url") or img_item.get("image")
+                        if u and u not in all_image_urls:
+                            all_image_urls.append(u)
+            elif isinstance(raw, dict):
+                u = raw.get("image") or raw.get("url")
+                if u and u not in all_image_urls:
+                    all_image_urls.append(u)
+            elif isinstance(raw, str) and raw not in all_image_urls:
+                all_image_urls.append(raw)
+        thumbnail = all_image_urls[0] if all_image_urls else None
 
         listing_url = item.get("url") or "https://www.zillow.com"
         date_listed = item.get("datePosted")
@@ -552,6 +589,7 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
             address=address,
             neighborhood=neighborhood,
             thumbnail_url=thumbnail,
+            image_urls=all_image_urls,
             sqft=sqft,
             description=description,
             has_dishwasher=amenities.get("has_dishwasher"),
@@ -718,7 +756,19 @@ def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable
 
         neighborhood = item.get("neighborhood") or home_info.get("neighborhood")
 
+        all_image_urls: list[str] = []
         img = item.get("imgSrc") or item.get("image") or item.get("thumbnailUrl")
+        if img and isinstance(img, str):
+            all_image_urls.append(img)
+        photos = item.get("photos") or item.get("galleryPhotos") or []
+        if isinstance(photos, list):
+            for p in photos:
+                if isinstance(p, str) and p not in all_image_urls:
+                    all_image_urls.append(p)
+                elif isinstance(p, dict):
+                    u = p.get("url") or p.get("src") or p.get("mixedSources", {}).get("jpeg", [{}])[0].get("url")
+                    if u and u not in all_image_urls:
+                        all_image_urls.append(u)
 
         # Coordinates
         latitude = None
@@ -759,6 +809,7 @@ def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable
             address=str(addr) if addr else None,
             neighborhood=str(neighborhood) if neighborhood else None,
             thumbnail_url=img,
+            image_urls=all_image_urls,
             sqft=int(sqft) if sqft else None,
             date_listed=str(date_listed) if date_listed else None,
             latitude=latitude,

@@ -20,6 +20,16 @@ CREATE TABLE IF NOT EXISTS listings (
     thumbnail_path TEXT,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS listing_images (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    listing_id  INTEGER NOT NULL REFERENCES listings(id),
+    image_url   TEXT    NOT NULL,
+    image_path  TEXT,
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(listing_id, image_url)
+);
 """
 
 _MIGRATIONS: list[tuple[str, str]] = [
@@ -104,7 +114,7 @@ def _bool_to_int(val: bool | None) -> int | None:
     return 1 if val else 0
 
 
-def upsert_listing(listing: Listing) -> None:
+def upsert_listing(listing: Listing) -> int:
     placeholders = ", ".join("?" for _ in _SCRAPE_FIELDS)
     cols = ", ".join(_SCRAPE_FIELDS)
 
@@ -158,7 +168,18 @@ def upsert_listing(listing: Listing) -> None:
     )
 
     with _connect() as conn:
-        conn.execute(sql, values)
+        cursor = conn.execute(sql, values)
+        listing_id = cursor.lastrowid
+        if not listing_id:
+            row = conn.execute(
+                "SELECT id FROM listings WHERE url = ?", (str(listing.url),)
+            ).fetchone()
+            listing_id = row["id"] if row else 0
+
+        if listing.image_urls:
+            save_listing_image_urls(listing_id, listing.image_urls, conn=conn)
+
+    return listing_id
 
 
 _SORT_OPTIONS = {
@@ -363,3 +384,68 @@ def mark_geocode_failed(listing_id: int, reason: str = "no_result") -> None:
             "UPDATE listings SET geocode_status = ? WHERE id = ?",
             (reason, listing_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Listing images
+# ---------------------------------------------------------------------------
+
+def save_listing_image_urls(
+    listing_id: int,
+    urls: list[str],
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    if not urls:
+        return
+    def _do(c: sqlite3.Connection) -> None:
+        for pos, url in enumerate(urls):
+            c.execute(
+                """
+                INSERT INTO listing_images (listing_id, image_url, position)
+                VALUES (?, ?, ?)
+                ON CONFLICT(listing_id, image_url) DO NOTHING
+                """,
+                (listing_id, url, pos),
+            )
+    if conn is not None:
+        _do(conn)
+    else:
+        with _connect() as c:
+            _do(c)
+
+
+def get_images_needing_download(limit: int = 20) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, listing_id, image_url, position
+            FROM listing_images
+            WHERE image_url IS NOT NULL AND image_path IS NULL
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def update_image_path(image_id: int, path: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE listing_images SET image_path = ? WHERE id = ?",
+            (path, image_id),
+        )
+
+
+def get_listing_images(listing_id: int) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, image_path, position
+            FROM listing_images
+            WHERE listing_id = ? AND image_path IS NOT NULL
+            ORDER BY position
+            """,
+            (listing_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]

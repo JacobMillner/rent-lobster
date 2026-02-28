@@ -226,6 +226,7 @@ def build_streeteasy_crawler(
         contact_name = None
         contact_phone = None
         no_fee = None
+        all_image_urls: list[str] = []
 
         # JSON-LD
         try:
@@ -269,11 +270,24 @@ def build_streeteasy_crawler(
             elif isinstance(floor_size, (int, float)):
                 sqft = int(floor_size)
             address = json_ld.get("name") or json_ld.get("address", {}).get("streetAddress")
-            thumbnail = json_ld.get("image") or json_ld.get("photo")
-            if isinstance(thumbnail, dict):
-                thumbnail = thumbnail.get("image") or thumbnail.get("url")
-            if isinstance(thumbnail, list):
-                thumbnail = thumbnail[0] if thumbnail else None
+
+            ld_image = json_ld.get("image") or json_ld.get("photo")
+            if isinstance(ld_image, list):
+                for img_item in ld_image:
+                    if isinstance(img_item, str):
+                        all_image_urls.append(img_item)
+                    elif isinstance(img_item, dict):
+                        u = img_item.get("url") or img_item.get("image")
+                        if u:
+                            all_image_urls.append(u)
+                thumbnail = all_image_urls[0] if all_image_urls else None
+            elif isinstance(ld_image, dict):
+                thumbnail = ld_image.get("image") or ld_image.get("url")
+                if thumbnail:
+                    all_image_urls.append(thumbnail)
+            elif isinstance(ld_image, str):
+                thumbnail = ld_image
+                all_image_urls.append(ld_image)
 
         # Regex fallback on body text
         if price is None:
@@ -303,10 +317,25 @@ def build_streeteasy_crawler(
         if not thumbnail:
             try:
                 thumbnail = await page.get_attribute('meta[property="og:image"]', "content")
+                if thumbnail and thumbnail not in all_image_urls:
+                    all_image_urls.insert(0, thumbnail)
             except Exception:
                 pass
         if not address:
             address = title.split("|")[0].strip() if title else None
+
+        try:
+            gallery_imgs = await page.eval_on_selector_all(
+                '[class*="carousel"] img[src], [class*="gallery"] img[src], '
+                '[class*="Carousel"] img[src], [class*="Gallery"] img[src], '
+                '[data-testid*="photo"] img[src]',
+                "els => els.map(e => e.src).filter(Boolean)",
+            )
+            for gi in (gallery_imgs or []):
+                if gi not in all_image_urls:
+                    all_image_urls.append(gi)
+        except Exception:
+            pass
 
         # Description
         for desc_sel in ['.Description-text', '[data-testid="description"]',
@@ -424,6 +453,7 @@ def build_streeteasy_crawler(
             address=address,
             neighborhood=neighborhood.strip() if neighborhood else None,
             thumbnail_url=thumbnail,
+            image_urls=list(dict.fromkeys(all_image_urls)),
             sqft=sqft,
             description=description,
             contact_name=contact_name,
@@ -517,16 +547,25 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
 
         description = item.get("description")
 
+        all_image_urls: list[str] = []
         thumbnail = None
-        photo = item.get("photo")
-        if isinstance(photo, dict):
-            thumbnail = photo.get("image") or photo.get("url")
-        elif isinstance(photo, str):
-            thumbnail = photo
-        if not thumbnail:
-            thumbnail = item.get("image")
-            if isinstance(thumbnail, list):
-                thumbnail = thumbnail[0] if thumbnail else None
+        for img_field in ("photo", "image"):
+            raw = item.get(img_field)
+            if isinstance(raw, list):
+                for img_item in raw:
+                    if isinstance(img_item, str) and img_item not in all_image_urls:
+                        all_image_urls.append(img_item)
+                    elif isinstance(img_item, dict):
+                        u = img_item.get("url") or img_item.get("image")
+                        if u and u not in all_image_urls:
+                            all_image_urls.append(u)
+            elif isinstance(raw, dict):
+                u = raw.get("image") or raw.get("url")
+                if u and u not in all_image_urls:
+                    all_image_urls.append(u)
+            elif isinstance(raw, str) and raw not in all_image_urls:
+                all_image_urls.append(raw)
+        thumbnail = all_image_urls[0] if all_image_urls else None
 
         listing_url = item.get("url") or ""
         if not listing_url:
@@ -556,6 +595,7 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
             address=address,
             neighborhood=neighborhood,
             thumbnail_url=thumbnail,
+            image_urls=all_image_urls,
             sqft=sqft,
             description=description,
             has_dishwasher=amenities.get("has_dishwasher"),

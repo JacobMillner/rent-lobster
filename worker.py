@@ -12,11 +12,12 @@ from urllib.parse import urlparse
 
 import httpx
 
-from db import get_listings_needing_geocoding, get_listings_needing_thumbnails, mark_geocode_failed, update_coordinates, update_thumbnail_path
+from db import get_images_needing_download, get_listings_needing_geocoding, get_listings_needing_thumbnails, mark_geocode_failed, update_coordinates, update_image_path, update_thumbnail_path
 
 log = logging.getLogger(__name__)
 
 THUMBNAIL_DIR = Path(__file__).resolve().parent / "thumbnails"
+IMAGES_DIR = Path(__file__).resolve().parent / "images"
 STORAGE_DIR = Path(__file__).resolve().parent / "storage"
 
 
@@ -256,6 +257,62 @@ class ThumbnailWorker:
 
 
 # ---------------------------------------------------------------------------
+# Image worker — downloads all listing images in a background thread
+# ---------------------------------------------------------------------------
+
+class ImageWorker:
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        IMAGES_DIR.mkdir(exist_ok=True)
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                rows = get_images_needing_download()
+                for row in rows:
+                    if self._stop.is_set():
+                        break
+                    self._download_one(
+                        row["id"], row["listing_id"],
+                        row["image_url"], row["position"],
+                    )
+            except Exception:
+                log.exception("Image worker error")
+            self._stop.wait(4)
+
+    def _download_one(
+        self, image_id: int, listing_id: int, url: str, position: int,
+    ) -> None:
+        ext = Path(urlparse(url).path).suffix.lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+            ext = ".jpg"
+        filename = f"{listing_id}_{position}{ext}"
+        dest = IMAGES_DIR / filename
+        if dest.exists():
+            update_image_path(image_id, filename)
+            return
+        try:
+            with httpx.Client(timeout=15, follow_redirects=True) as client:
+                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                dest.write_bytes(resp.content)
+                update_image_path(image_id, filename)
+        except Exception:
+            log.debug("Failed to download image %s for listing %s", image_id, listing_id)
+
+
+# ---------------------------------------------------------------------------
 # Geocoding worker — resolves addresses to lat/lng via Nominatim (OSM)
 # ---------------------------------------------------------------------------
 
@@ -329,4 +386,5 @@ class GeocodingWorker:
 # Module-level singletons
 crawl_manager = CrawlManager()
 thumbnail_worker = ThumbnailWorker()
+image_worker = ImageWorker()
 geocoding_worker = GeocodingWorker()

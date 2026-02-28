@@ -14,6 +14,7 @@ class Listing(BaseModel):
     address: str | None = None
     neighborhood: str | None = None
     thumbnail_url: str | None = None
+    image_urls: list[str] = []
     sqft: int | None = None
     description: str | None = None
     contact_name: str | None = None

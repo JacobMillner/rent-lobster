@@ -142,6 +142,95 @@ function Thumbnail({ listing }: { listing: Listing }) {
   );
 }
 
+function ImageGallery({ listing }: { listing: Listing }) {
+  const images = (listing.images ?? []).filter((img) => img.image_path);
+  const [idx, setIdx] = useState(0);
+  const [imgErr, setImgErr] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (images.length <= 1) return;
+      if (e.key === "ArrowLeft") setIdx((i) => (i - 1 + images.length) % images.length);
+      if (e.key === "ArrowRight") setIdx((i) => (i + 1) % images.length);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [images.length]);
+
+  if (images.length === 0) {
+    return (
+      <div style={s.modalImgWrap}>
+        <Thumbnail listing={listing} />
+      </div>
+    );
+  }
+
+  const safeIdx = idx < images.length ? idx : 0;
+  const current = images[safeIdx];
+  const maxDots = 12;
+
+  return (
+    <div style={s.galleryWrap}>
+      {imgErr.has(safeIdx) ? (
+        <div style={{ ...s.thumbPlaceholder, height: 400 }}>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" strokeWidth="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <path d="m21 15-5-5L5 21" />
+          </svg>
+        </div>
+      ) : (
+        <img
+          src={`/api/images/${current.image_path}`}
+          alt={`Photo ${safeIdx + 1}`}
+          style={s.galleryImg}
+          onError={() => setImgErr((prev) => new Set(prev).add(safeIdx))}
+        />
+      )}
+
+      {images.length > 1 && (
+        <>
+          <button
+            style={{ ...s.galleryArrow, ...s.galleryArrowLeft }}
+            onClick={(e) => { e.stopPropagation(); setIdx((i) => (i - 1 + images.length) % images.length); }}
+            aria-label="Previous image"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
+          <button
+            style={{ ...s.galleryArrow, ...s.galleryArrowRight }}
+            onClick={(e) => { e.stopPropagation(); setIdx((i) => (i + 1) % images.length); }}
+            aria-label="Next image"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        </>
+      )}
+
+      <span style={s.galleryCounter}>
+        {safeIdx + 1} / {images.length}
+      </span>
+
+      {images.length > 1 && images.length <= maxDots && (
+        <div style={s.galleryDots}>
+          {images.map((_, i) => (
+            <button
+              key={i}
+              style={{ ...s.galleryDot, ...(i === safeIdx ? s.galleryDotActive : {}) }}
+              onClick={(e) => { e.stopPropagation(); setIdx(i); }}
+              aria-label={`Go to image ${i + 1}`}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AmenityChips({ listing, labels }: { listing: Listing; labels: Record<string, string> }) {
   const amenities = getAmenities(listing, labels);
   if (amenities.length === 0) return null;
@@ -462,9 +551,7 @@ function DetailModal({
       <div style={s.modalCard} onClick={(e) => e.stopPropagation()}>
         <button style={s.modalClose} onClick={onClose}>&times;</button>
 
-        <div style={s.modalImgWrap}>
-          <Thumbnail listing={listing} />
-        </div>
+        <ImageGallery listing={listing} />
 
         <div style={s.modalHeader}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

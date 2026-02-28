@@ -8,8 +8,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from db import get_all_listings, get_listing, get_map_listings, get_sources, get_stats, init_db, update_listing
-from worker import THUMBNAIL_DIR, crawl_manager, geocoding_worker, thumbnail_worker
+from db import get_all_listings, get_listing, get_listing_images, get_map_listings, get_sources, get_stats, init_db, update_listing
+from worker import IMAGES_DIR, THUMBNAIL_DIR, crawl_manager, geocoding_worker, image_worker, thumbnail_worker
 
 STATIC_DIR = Path(__file__).resolve().parent / "frontend" / "out"
 
@@ -20,12 +20,14 @@ app = FastAPI(title="Rent Lobster")
 def startup() -> None:
     init_db()
     thumbnail_worker.start()
+    image_worker.start()
     geocoding_worker.start()
 
 
 @app.on_event("shutdown")
 def shutdown() -> None:
     thumbnail_worker.stop()
+    image_worker.stop()
     geocoding_worker.stop()
 
 
@@ -63,6 +65,7 @@ def api_listing_detail(listing_id: int) -> dict:
     row = get_listing(listing_id)
     if row is None:
         raise HTTPException(404, "Listing not found")
+    row["images"] = get_listing_images(listing_id)
     return row
 
 
@@ -144,6 +147,21 @@ def api_thumbnail(filename: str) -> FileResponse:
     path = THUMBNAIL_DIR / filename
     if not path.exists() or not path.is_file():
         raise HTTPException(404, "Thumbnail not found")
+    media = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }.get(path.suffix.lower(), "image/jpeg")
+    return FileResponse(path, media_type=media)
+
+
+@app.get("/api/images/{filename:path}")
+def api_image(filename: str) -> FileResponse:
+    path = IMAGES_DIR / filename
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "Image not found")
     media = {
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",

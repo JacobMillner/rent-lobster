@@ -1,3 +1,9 @@
+export interface ListingImage {
+  id: number;
+  image_path: string | null;
+  position: number;
+}
+
 export interface Listing {
   id: number;
   source: string;
@@ -37,6 +43,7 @@ export interface Listing {
   year_built: number | null;
   property_type: string | null;
   tax_annual: number | null;
+  images?: ListingImage[];
 }
 
 export interface PaginatedResponse {
