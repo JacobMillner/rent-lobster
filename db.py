@@ -22,10 +22,48 @@ CREATE TABLE IF NOT EXISTS listings (
 );
 """
 
-_MIGRATIONS = [
+_MIGRATIONS: list[tuple[str, str]] = [
     ("thumbnail_url", "TEXT"),
     ("thumbnail_path", "TEXT"),
+    # Apartment detail fields
+    ("sqft", "INTEGER"),
+    ("description", "TEXT"),
+    ("contact_name", "TEXT"),
+    ("contact_phone", "TEXT"),
+    ("contact_email", "TEXT"),
+    ("subway_minutes", "INTEGER"),
+    ("nearest_subway", "TEXT"),
+    ("has_dishwasher", "INTEGER"),
+    ("has_balcony", "INTEGER"),
+    ("laundry", "TEXT"),
+    ("has_doorman", "INTEGER"),
+    ("has_elevator", "INTEGER"),
+    ("has_gym", "INTEGER"),
+    ("pets_allowed", "INTEGER"),
+    ("no_fee", "INTEGER"),
+    ("available_date", "TEXT"),
+    ("floor", "TEXT"),
+    # User-managed fields
+    ("status", "TEXT DEFAULT 'new'"),
+    ("is_favorite", "INTEGER DEFAULT 0"),
+    ("notes", "TEXT"),
 ]
+
+_SCRAPE_FIELDS = [
+    "source", "url", "price", "beds", "baths", "address", "neighborhood",
+    "thumbnail_url", "sqft", "description", "contact_name", "contact_phone",
+    "contact_email", "subway_minutes", "nearest_subway", "has_dishwasher",
+    "has_balcony", "laundry", "has_doorman", "has_elevator", "has_gym",
+    "pets_allowed", "no_fee", "available_date", "floor",
+]
+
+_ALLOWED_UPDATE_FIELDS = {
+    "price", "beds", "baths", "address", "neighborhood", "sqft", "description",
+    "contact_name", "contact_phone", "contact_email", "subway_minutes",
+    "nearest_subway", "has_dishwasher", "has_balcony", "laundry", "has_doorman",
+    "has_elevator", "has_gym", "pets_allowed", "no_fee", "available_date",
+    "floor", "status", "is_favorite", "notes",
+}
 
 
 def _connect() -> sqlite3.Connection:
@@ -45,31 +83,59 @@ def init_db() -> None:
                 pass
 
 
+def _bool_to_int(val: bool | None) -> int | None:
+    if val is None:
+        return None
+    return 1 if val else 0
+
+
 def upsert_listing(listing: Listing) -> None:
+    placeholders = ", ".join("?" for _ in _SCRAPE_FIELDS)
+    cols = ", ".join(_SCRAPE_FIELDS)
+
+    update_parts = []
+    for f in _SCRAPE_FIELDS:
+        if f in ("source", "url"):
+            continue
+        update_parts.append(f"{f} = COALESCE(excluded.{f}, listings.{f})")
+    update_clause = ", ".join(update_parts)
+
+    sql = f"""
+        INSERT INTO listings ({cols})
+        VALUES ({placeholders})
+        ON CONFLICT(url) DO UPDATE SET {update_clause}
+    """
+
+    values = (
+        listing.source,
+        str(listing.url),
+        listing.price,
+        listing.beds,
+        listing.baths,
+        listing.address,
+        listing.neighborhood,
+        listing.thumbnail_url,
+        listing.sqft,
+        listing.description,
+        listing.contact_name,
+        listing.contact_phone,
+        listing.contact_email,
+        listing.subway_minutes,
+        listing.nearest_subway,
+        _bool_to_int(listing.has_dishwasher),
+        _bool_to_int(listing.has_balcony),
+        listing.laundry,
+        _bool_to_int(listing.has_doorman),
+        _bool_to_int(listing.has_elevator),
+        _bool_to_int(listing.has_gym),
+        _bool_to_int(listing.pets_allowed),
+        _bool_to_int(listing.no_fee),
+        listing.available_date,
+        listing.floor,
+    )
+
     with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO listings (source, url, price, beds, baths, address, neighborhood, thumbnail_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(url) DO UPDATE SET
-                price         = excluded.price,
-                beds          = excluded.beds,
-                baths         = excluded.baths,
-                address       = excluded.address,
-                neighborhood  = excluded.neighborhood,
-                thumbnail_url = COALESCE(excluded.thumbnail_url, listings.thumbnail_url)
-            """,
-            (
-                listing.source,
-                str(listing.url),
-                listing.price,
-                listing.beds,
-                listing.baths,
-                listing.address,
-                listing.neighborhood,
-                listing.thumbnail_url,
-            ),
-        )
+        conn.execute(sql, values)
 
 
 def get_all_listings(
@@ -77,7 +143,11 @@ def get_all_listings(
     min_price: int | None = None,
     max_price: int | None = None,
     min_beds: int | None = None,
-) -> list[dict]:
+    status: str | None = None,
+    is_favorite: bool | None = None,
+    page: int = 1,
+    per_page: int = 24,
+) -> dict:
     clauses: list[str] = []
     params: list[object] = []
 
@@ -93,13 +163,54 @@ def get_all_listings(
     if min_beds is not None:
         clauses.append("beds >= ?")
         params.append(min_beds)
+    if status:
+        clauses.append("COALESCE(status, 'new') = ?")
+        params.append(status)
+    if is_favorite is not None and is_favorite:
+        clauses.append("is_favorite = 1")
 
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    sql = f"SELECT * FROM listings{where} ORDER BY created_at DESC"
 
     with _connect() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        count_row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM listings{where}", params
+        ).fetchone()
+        total = count_row["total"] if count_row else 0
+
+        offset = (page - 1) * per_page
+        sql = f"SELECT * FROM listings{where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        rows = conn.execute(sql, [*params, per_page, offset]).fetchall()
+
+        return {
+            "listings": [dict(row) for row in rows],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+        }
+
+
+def get_listing(listing_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def update_listing(listing_id: int, fields: dict) -> dict | None:
+    safe = {k: v for k, v in fields.items() if k in _ALLOWED_UPDATE_FIELDS}
+    if not safe:
+        return get_listing(listing_id)
+
+    set_parts = [f"{k} = ?" for k in safe]
+    values = list(safe.values())
+    values.append(listing_id)
+
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE listings SET {', '.join(set_parts)} WHERE id = ?",
+            values,
+        )
+
+    return get_listing(listing_id)
 
 
 def get_sources() -> list[str]:

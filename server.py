@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from db import get_all_listings, get_sources, get_stats, init_db
+from db import get_all_listings, get_listing, get_sources, get_stats, init_db, update_listing
 from worker import THUMBNAIL_DIR, crawl_manager, thumbnail_worker
 
 STATIC_DIR = Path(__file__).resolve().parent / "frontend" / "out"
@@ -34,13 +35,40 @@ def api_listings(
     min_price: int | None = Query(None),
     max_price: int | None = Query(None),
     min_beds: int | None = Query(None),
-) -> list[dict]:
+    status: str | None = Query(None),
+    is_favorite: bool | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(24, ge=1, le=100),
+) -> dict:
     return get_all_listings(
         source=source,
         min_price=min_price,
         max_price=max_price,
         min_beds=min_beds,
+        status=status,
+        is_favorite=is_favorite,
+        page=page,
+        per_page=per_page,
     )
+
+
+@app.get("/api/listings/{listing_id}")
+def api_listing_detail(listing_id: int) -> dict:
+    row = get_listing(listing_id)
+    if row is None:
+        raise HTTPException(404, "Listing not found")
+    return row
+
+
+@app.patch("/api/listings/{listing_id}")
+def api_listing_update(listing_id: int, body: dict[str, Any]) -> dict:
+    existing = get_listing(listing_id)
+    if existing is None:
+        raise HTTPException(404, "Listing not found")
+    updated = update_listing(listing_id, body)
+    if updated is None:
+        raise HTTPException(500, "Failed to update listing")
+    return updated
 
 
 @app.get("/api/sources")

@@ -13,7 +13,7 @@ from crawlee.proxy_configuration import ProxyConfiguration
 
 from config import Settings
 from db import upsert_listing
-from models import Listing
+from models import Listing, scan_amenities, _SQFT_RE
 from spiders._stealth import inject_stealth, stealth_context_options
 
 log = logging.getLogger(__name__)
@@ -203,7 +203,6 @@ def build_streeteasy_crawler(
     async def _handle_detail_page(page, context, url, title, settings, on_listing):
         log.info("[streeteasy] Processing as listing detail page")
 
-        # Use a short timeout for all element queries on detail pages
         page.set_default_timeout(5_000)
 
         try:
@@ -214,11 +213,16 @@ def build_streeteasy_crawler(
         price = None
         beds = None
         baths = None
+        sqft = None
         neighborhood = None
         address = None
         thumbnail = None
+        description = None
+        contact_name = None
+        contact_phone = None
+        no_fee = None
 
-        # JSON-LD — fast since it uses page.evaluate (no element wait)
+        # JSON-LD
         try:
             json_ld = await page.evaluate("""() => {
                 const scripts = document.querySelectorAll('script[type="application/ld+json"]');
@@ -251,6 +255,14 @@ def build_streeteasy_crawler(
                     baths = float(json_ld["numberOfBathroomsTotal"])
                 except (ValueError, TypeError):
                     pass
+            floor_size = json_ld.get("floorSize")
+            if isinstance(floor_size, dict):
+                try:
+                    sqft = int(str(floor_size.get("value", "")).replace(",", ""))
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(floor_size, (int, float)):
+                sqft = int(floor_size)
             address = json_ld.get("name") or json_ld.get("address", {}).get("streetAddress")
             thumbnail = json_ld.get("image") or json_ld.get("photo")
             if isinstance(thumbnail, dict):
@@ -258,7 +270,7 @@ def build_streeteasy_crawler(
             if isinstance(thumbnail, list):
                 thumbnail = thumbnail[0] if thumbnail else None
 
-        # Regex fallback on body text (no Playwright calls, instant)
+        # Regex fallback on body text
         if price is None:
             m = _PRICE_RE.search(body_text)
             price = int(m.group(1).replace(",", "")) if m else None
@@ -268,8 +280,15 @@ def build_streeteasy_crawler(
         if baths is None:
             m_bath = _BATH_RE.search(body_text)
             baths = float(m_bath.group(1)) if m_bath else None
+        if sqft is None:
+            m_sqft = _SQFT_RE.search(body_text)
+            if m_sqft:
+                try:
+                    sqft = int(m_sqft.group(1).replace(",", ""))
+                except ValueError:
+                    pass
 
-        # Element queries — each wrapped so a timeout on one doesn't block the rest
+        # Element queries
         if not neighborhood:
             try:
                 neighborhood_el = await page.query_selector('a[href*="/neighborhood/"]')
@@ -284,7 +303,80 @@ def build_streeteasy_crawler(
         if not address:
             address = title.split("|")[0].strip() if title else None
 
-        log.info("[streeteasy] Parsed: price=%s, beds=%s, baths=%s, addr=%r", price, beds, baths, address)
+        # Description
+        for desc_sel in ['.Description-text', '[data-testid="description"]',
+                         '[class*="description"]', '.details-section p']:
+            try:
+                desc_el = await page.query_selector(desc_sel)
+                if desc_el:
+                    description = (await desc_el.text_content()) or None
+                    if description:
+                        description = description.strip()
+                        break
+            except Exception:
+                continue
+
+        # Contact info
+        for contact_sel in ['.ContactInfo', '[data-testid="agent"]', '[class*="agentInfo"]',
+                            '[class*="contact"]', '.listing-agent']:
+            try:
+                contact_el = await page.query_selector(contact_sel)
+                if contact_el:
+                    contact_text = (await contact_el.text_content()) or ""
+                    if contact_text:
+                        contact_name = contact_text.strip().split("\n")[0].strip()
+                        break
+            except Exception:
+                continue
+
+        # No-fee badge
+        try:
+            no_fee_el = await page.query_selector('[class*="noFee"], [class*="no-fee"], [data-testid*="noFee"]')
+            if no_fee_el:
+                no_fee = True
+        except Exception:
+            pass
+
+        # Amenities from body text
+        amenities = scan_amenities(body_text) if body_text else {}
+
+        # Structured amenity list
+        try:
+            amenity_texts = await page.eval_on_selector_all(
+                '.AmenitiesList li, [data-testid*="amenity"], [class*="amenity"] li, .details-info li',
+                "els => els.map(e => e.textContent).filter(Boolean)",
+            )
+            if amenity_texts:
+                combined = " ".join(amenity_texts)
+                structured = scan_amenities(combined)
+                for k, v in structured.items():
+                    if v is not None and k not in amenities:
+                        amenities[k] = v
+        except Exception:
+            pass
+
+        # Transit info
+        try:
+            transit_texts = await page.eval_on_selector_all(
+                '.Transportation li, .NearbyTransit li, [data-testid*="transit"] li, [class*="transit"] li',
+                "els => els.map(e => e.textContent).filter(Boolean)",
+            )
+            if transit_texts and not amenities.get("nearest_subway"):
+                amenities["nearest_subway"] = transit_texts[0].strip()
+                import re as _re
+                for t in transit_texts:
+                    m_min = _re.search(r"(\d+)\s*min", t)
+                    if m_min:
+                        amenities["subway_minutes"] = int(m_min.group(1))
+                        break
+        except Exception:
+            pass
+
+        if no_fee is None:
+            no_fee = amenities.get("no_fee")
+
+        log.info("[streeteasy] Parsed: price=%s, beds=%s, baths=%s, addr=%r, sqft=%s",
+                 price, beds, baths, address, sqft)
 
         listing = Listing(
             source="streeteasy",
@@ -295,6 +387,23 @@ def build_streeteasy_crawler(
             address=address,
             neighborhood=neighborhood.strip() if neighborhood else None,
             thumbnail_url=thumbnail,
+            sqft=sqft,
+            description=description,
+            contact_name=contact_name,
+            contact_phone=amenities.get("contact_phone") or contact_phone,
+            contact_email=amenities.get("contact_email"),
+            subway_minutes=amenities.get("subway_minutes"),
+            nearest_subway=amenities.get("nearest_subway"),
+            has_dishwasher=amenities.get("has_dishwasher"),
+            has_balcony=amenities.get("has_balcony"),
+            laundry=amenities.get("laundry"),
+            has_doorman=amenities.get("has_doorman"),
+            has_elevator=amenities.get("has_elevator"),
+            has_gym=amenities.get("has_gym"),
+            pets_allowed=amenities.get("pets_allowed"),
+            no_fee=no_fee,
+            available_date=amenities.get("available_date"),
+            floor=amenities.get("floor"),
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):

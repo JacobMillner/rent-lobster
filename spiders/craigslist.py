@@ -8,7 +8,7 @@ from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 
 from config import Settings
 from db import upsert_listing
-from models import Listing
+from models import Listing, scan_amenities, _SQFT_RE
 
 _PRICE_RE = re.compile(r"\$([\d,]+)")
 _BED_RE = re.compile(r"(\d+(?:\.\d+)?)\s*br\b", re.IGNORECASE)
@@ -156,6 +156,14 @@ def build_craigslist_crawler(
         housing = (await context.page.text_content("span.housing")) or ""
         beds, baths = _parse_beds_baths(housing)
 
+        sqft = None
+        m_sqft = _SQFT_RE.search(housing)
+        if m_sqft:
+            try:
+                sqft = int(m_sqft.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
         neighborhood = (await context.page.text_content("small")) or None
         if neighborhood:
             neighborhood = neighborhood.strip("() \n\t") or None
@@ -168,6 +176,48 @@ def build_craigslist_crawler(
             )
             thumbnail = imgs[0] if imgs else None
 
+        description = None
+        try:
+            body_el = await context.page.query_selector("section#postingbody")
+            if body_el:
+                description = (await body_el.text_content()) or None
+                if description:
+                    description = re.sub(r"QR Code Link to This Post", "", description).strip()
+        except Exception:
+            pass
+
+        body_text = description or ""
+        if not body_text:
+            try:
+                body_text = (await context.page.text_content("body")) or ""
+            except Exception:
+                body_text = ""
+
+        if not sqft and body_text:
+            m_sqft = _SQFT_RE.search(body_text)
+            if m_sqft:
+                try:
+                    sqft = int(m_sqft.group(1).replace(",", ""))
+                except ValueError:
+                    pass
+
+        amenities = scan_amenities(body_text) if body_text else {}
+
+        attrs_text = ""
+        try:
+            attr_groups = await context.page.eval_on_selector_all(
+                "p.attrgroup span",
+                "els => els.map(e => e.textContent).filter(Boolean)",
+            )
+            if attr_groups:
+                attrs_text = " ".join(attr_groups)
+                attr_amenities = scan_amenities(attrs_text)
+                for k, v in attr_amenities.items():
+                    if v is not None and k not in amenities:
+                        amenities[k] = v
+        except Exception:
+            pass
+
         listing = Listing(
             source="craigslist",
             url=url,
@@ -177,6 +227,23 @@ def build_craigslist_crawler(
             neighborhood=neighborhood,
             address=title.strip() or None,
             thumbnail_url=thumbnail,
+            sqft=sqft,
+            description=description,
+            contact_name=amenities.get("contact_name"),
+            contact_phone=amenities.get("contact_phone"),
+            contact_email=amenities.get("contact_email"),
+            subway_minutes=amenities.get("subway_minutes"),
+            nearest_subway=amenities.get("nearest_subway"),
+            has_dishwasher=amenities.get("has_dishwasher"),
+            has_balcony=amenities.get("has_balcony"),
+            laundry=amenities.get("laundry"),
+            has_doorman=amenities.get("has_doorman"),
+            has_elevator=amenities.get("has_elevator"),
+            has_gym=amenities.get("has_gym"),
+            pets_allowed=amenities.get("pets_allowed"),
+            no_fee=amenities.get("no_fee"),
+            available_date=amenities.get("available_date"),
+            floor=amenities.get("floor"),
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):

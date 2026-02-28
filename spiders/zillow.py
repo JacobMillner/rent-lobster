@@ -13,7 +13,7 @@ from crawlee.proxy_configuration import ProxyConfiguration
 
 from config import Settings
 from db import upsert_listing
-from models import Listing
+from models import Listing, scan_amenities, _SQFT_RE
 from spiders._stealth import inject_stealth, stealth_context_options
 
 log = logging.getLogger(__name__)
@@ -244,8 +244,10 @@ def build_zillow_crawler(
         price = None
         beds = None
         baths = None
+        sqft = None
         address = None
         thumbnail = None
+        description = None
 
         try:
             json_ld = await page.evaluate("""() => {
@@ -276,6 +278,14 @@ def build_zillow_crawler(
                 thumbnail = thumbnail.get("image") or thumbnail.get("url")
             if isinstance(thumbnail, list):
                 thumbnail = thumbnail[0] if thumbnail else None
+            floor_size = json_ld.get("floorSize")
+            if isinstance(floor_size, dict):
+                try:
+                    sqft = int(str(floor_size.get("value", "")).replace(",", ""))
+                except (ValueError, TypeError):
+                    pass
+            elif isinstance(floor_size, (int, float)):
+                sqft = int(floor_size)
 
         if price is None:
             m = _PRICE_RE.search(body_text)
@@ -286,6 +296,13 @@ def build_zillow_crawler(
         if baths is None:
             m_bath = _BATH_RE.search(body_text)
             baths = float(m_bath.group(1)) if m_bath else None
+        if sqft is None:
+            m_sqft = _SQFT_RE.search(body_text)
+            if m_sqft:
+                try:
+                    sqft = int(m_sqft.group(1).replace(",", ""))
+                except ValueError:
+                    pass
         if not thumbnail:
             try:
                 thumbnail = await page.get_attribute('meta[property="og:image"]', "content")
@@ -294,7 +311,54 @@ def build_zillow_crawler(
         if not address:
             address = title.split("|")[0].strip() if title else None
 
-        log.info("[zillow] Parsed: price=%s, beds=%s, baths=%s, addr=%r", price, beds, baths, address)
+        # Description
+        for desc_sel in ['.Text-c11n', '[data-testid="description"]', '[class*="description"]',
+                         '.ds-overview-section', '.listing-description']:
+            try:
+                desc_el = await page.query_selector(desc_sel)
+                if desc_el:
+                    description = (await desc_el.text_content()) or None
+                    if description:
+                        description = description.strip()
+                        break
+            except Exception:
+                continue
+
+        # Amenities from body text
+        amenities = scan_amenities(body_text) if body_text else {}
+
+        # Facts and features sections
+        try:
+            fact_texts = await page.eval_on_selector_all(
+                '[class*="fact"] li, [data-testid*="fact"] li, .ds-home-fact-list li, '
+                '[class*="feature"] li, [class*="amenity"] li',
+                "els => els.map(e => e.textContent).filter(Boolean)",
+            )
+            if fact_texts:
+                combined = " ".join(fact_texts)
+                structured = scan_amenities(combined)
+                for k, v in structured.items():
+                    if v is not None and k not in amenities:
+                        amenities[k] = v
+        except Exception:
+            pass
+
+        # Contact / property manager
+        contact_name = None
+        for contact_sel in ['[class*="listing-agent"]', '[class*="propertyManager"]',
+                            '[data-testid*="contact"]', '[class*="contact"]']:
+            try:
+                contact_el = await page.query_selector(contact_sel)
+                if contact_el:
+                    ct = (await contact_el.text_content()) or ""
+                    if ct:
+                        contact_name = ct.strip().split("\n")[0].strip()
+                        break
+            except Exception:
+                continue
+
+        log.info("[zillow] Parsed: price=%s, beds=%s, baths=%s, addr=%r, sqft=%s",
+                 price, beds, baths, address, sqft)
 
         listing = Listing(
             source="zillow",
@@ -304,6 +368,23 @@ def build_zillow_crawler(
             baths=baths,
             address=address,
             thumbnail_url=thumbnail,
+            sqft=sqft,
+            description=description,
+            contact_name=contact_name,
+            contact_phone=amenities.get("contact_phone"),
+            contact_email=amenities.get("contact_email"),
+            subway_minutes=amenities.get("subway_minutes"),
+            nearest_subway=amenities.get("nearest_subway"),
+            has_dishwasher=amenities.get("has_dishwasher"),
+            has_balcony=amenities.get("has_balcony"),
+            laundry=amenities.get("laundry"),
+            has_doorman=amenities.get("has_doorman"),
+            has_elevator=amenities.get("has_elevator"),
+            has_gym=amenities.get("has_gym"),
+            pets_allowed=amenities.get("pets_allowed"),
+            no_fee=amenities.get("no_fee"),
+            available_date=amenities.get("available_date"),
+            floor=amenities.get("floor"),
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
