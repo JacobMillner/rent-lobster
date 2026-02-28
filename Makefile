@@ -6,7 +6,7 @@ UV_BIN ?= $(HOME)/.local/bin/uv
 FRONTEND_DIR := frontend
 STATIC_OUT := $(FRONTEND_DIR)/out
 
-.PHONY: help install uv sync playwright run test lint fmt typecheck check clean \
+.PHONY: help install uv sync playwright install-browsers run test lint fmt typecheck check clean \
         frontend frontend-install server
 
 help:
@@ -35,6 +35,9 @@ sync: uv
 playwright: sync
 	uv run playwright install chromium
 
+install-browsers: sync
+	uv run playwright install --with-deps chromium firefox
+
 # ---- Frontend ----
 frontend-install:
 	@if ! command -v node >/dev/null 2>&1; then \
@@ -47,7 +50,7 @@ frontend: frontend-install
 	cd $(FRONTEND_DIR) && npm run build
 
 # ---- Top-level install ----
-install: playwright frontend-install
+install: install-browsers frontend-install
 	@echo "Installed. Use: make run / make server"
 
 # ---- Run crawler ----

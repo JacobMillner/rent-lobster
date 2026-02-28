@@ -9,6 +9,7 @@ class Listing(BaseModel):
     baths: float | None = None
     address: str | None = None
     neighborhood: str | None = None
+    thumbnail_url: str | None = None
 
     def matches(self, *, min_beds: int, min_baths: int, max_rent: int) -> bool:
         if self.price is not None and self.price > max_rent:

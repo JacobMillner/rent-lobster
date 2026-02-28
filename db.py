@@ -8,17 +8,24 @@ DB_PATH = Path(__file__).resolve().parent / "rent_lobster.db"
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS listings (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    source      TEXT    NOT NULL,
-    url         TEXT    NOT NULL UNIQUE,
-    price       INTEGER,
-    beds        INTEGER,
-    baths       REAL,
-    address     TEXT,
-    neighborhood TEXT,
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source         TEXT    NOT NULL,
+    url            TEXT    NOT NULL UNIQUE,
+    price          INTEGER,
+    beds           INTEGER,
+    baths          REAL,
+    address        TEXT,
+    neighborhood   TEXT,
+    thumbnail_url  TEXT,
+    thumbnail_path TEXT,
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 """
+
+_MIGRATIONS = [
+    ("thumbnail_url", "TEXT"),
+    ("thumbnail_path", "TEXT"),
+]
 
 
 def _connect() -> sqlite3.Connection:
@@ -31,20 +38,26 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_DDL)
+        for col, dtype in _MIGRATIONS:
+            try:
+                conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {dtype}")
+            except sqlite3.OperationalError:
+                pass
 
 
 def upsert_listing(listing: Listing) -> None:
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO listings (source, url, price, beds, baths, address, neighborhood)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO listings (source, url, price, beds, baths, address, neighborhood, thumbnail_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
-                price        = excluded.price,
-                beds         = excluded.beds,
-                baths        = excluded.baths,
-                address      = excluded.address,
-                neighborhood = excluded.neighborhood
+                price         = excluded.price,
+                beds          = excluded.beds,
+                baths         = excluded.baths,
+                address       = excluded.address,
+                neighborhood  = excluded.neighborhood,
+                thumbnail_url = COALESCE(excluded.thumbnail_url, listings.thumbnail_url)
             """,
             (
                 listing.source,
@@ -54,6 +67,7 @@ def upsert_listing(listing: Listing) -> None:
                 listing.baths,
                 listing.address,
                 listing.neighborhood,
+                listing.thumbnail_url,
             ),
         )
 
@@ -101,13 +115,35 @@ def get_stats() -> dict:
         row = conn.execute(
             """
             SELECT
-                COUNT(*)           AS total,
+                COUNT(*)               AS total,
                 COUNT(DISTINCT source) AS sources,
-                AVG(price)         AS avg_price,
-                MIN(price)         AS min_price,
-                MAX(price)         AS max_price
+                AVG(price)             AS avg_price,
+                MIN(price)             AS min_price,
+                MAX(price)             AS max_price
             FROM listings
             WHERE price IS NOT NULL
             """
         ).fetchone()
         return dict(row) if row else {}
+
+
+def get_listings_needing_thumbnails(limit: int = 20) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, thumbnail_url
+            FROM listings
+            WHERE thumbnail_url IS NOT NULL AND thumbnail_path IS NULL
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def update_thumbnail_path(listing_id: int, path: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE listings SET thumbnail_path = ? WHERE id = ?",
+            (path, listing_id),
+        )
