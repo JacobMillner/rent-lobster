@@ -43,6 +43,10 @@ _MIGRATIONS: list[tuple[str, str]] = [
     ("no_fee", "INTEGER"),
     ("available_date", "TEXT"),
     ("floor", "TEXT"),
+    ("date_listed", "TEXT"),
+    ("latitude", "REAL"),
+    ("longitude", "REAL"),
+    ("geocode_status", "TEXT"),
     # User-managed fields
     ("status", "TEXT DEFAULT 'new'"),
     ("is_favorite", "INTEGER DEFAULT 0"),
@@ -54,7 +58,8 @@ _SCRAPE_FIELDS = [
     "thumbnail_url", "sqft", "description", "contact_name", "contact_phone",
     "contact_email", "subway_minutes", "nearest_subway", "has_dishwasher",
     "has_balcony", "laundry", "has_doorman", "has_elevator", "has_gym",
-    "pets_allowed", "no_fee", "available_date", "floor",
+    "pets_allowed", "no_fee", "available_date", "floor", "date_listed",
+    "latitude", "longitude",
 ]
 
 _ALLOWED_UPDATE_FIELDS = {
@@ -62,7 +67,8 @@ _ALLOWED_UPDATE_FIELDS = {
     "contact_name", "contact_phone", "contact_email", "subway_minutes",
     "nearest_subway", "has_dishwasher", "has_balcony", "laundry", "has_doorman",
     "has_elevator", "has_gym", "pets_allowed", "no_fee", "available_date",
-    "floor", "status", "is_favorite", "notes",
+    "floor", "date_listed", "latitude", "longitude",
+    "status", "is_favorite", "notes",
 }
 
 
@@ -132,22 +138,31 @@ def upsert_listing(listing: Listing) -> None:
         _bool_to_int(listing.no_fee),
         listing.available_date,
         listing.floor,
+        listing.date_listed,
+        listing.latitude,
+        listing.longitude,
     )
 
     with _connect() as conn:
         conn.execute(sql, values)
 
 
-def get_all_listings(
+_SORT_OPTIONS = {
+    "date_listed": "COALESCE(date_listed, created_at) DESC",
+    "created_at": "created_at DESC",
+    "price_asc": "price ASC",
+    "price_desc": "price DESC",
+}
+
+
+def _build_where(
     source: str | None = None,
     min_price: int | None = None,
     max_price: int | None = None,
     min_beds: int | None = None,
     status: str | None = None,
     is_favorite: bool | None = None,
-    page: int = 1,
-    per_page: int = 24,
-) -> dict:
+) -> tuple[str, list[object]]:
     clauses: list[str] = []
     params: list[object] = []
 
@@ -170,6 +185,22 @@ def get_all_listings(
         clauses.append("is_favorite = 1")
 
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
+
+def get_all_listings(
+    source: str | None = None,
+    min_price: int | None = None,
+    max_price: int | None = None,
+    min_beds: int | None = None,
+    status: str | None = None,
+    is_favorite: bool | None = None,
+    sort: str | None = None,
+    page: int = 1,
+    per_page: int = 24,
+) -> dict:
+    where, params = _build_where(source, min_price, max_price, min_beds, status, is_favorite)
+    order_by = _SORT_OPTIONS.get(sort or "date_listed", _SORT_OPTIONS["date_listed"])
 
     with _connect() as conn:
         count_row = conn.execute(
@@ -178,7 +209,7 @@ def get_all_listings(
         total = count_row["total"] if count_row else 0
 
         offset = (page - 1) * per_page
-        sql = f"SELECT * FROM listings{where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        sql = f"SELECT * FROM listings{where} ORDER BY {order_by} LIMIT ? OFFSET ?"
         rows = conn.execute(sql, [*params, per_page, offset]).fetchall()
 
         return {
@@ -187,6 +218,29 @@ def get_all_listings(
             "page": page,
             "per_page": per_page,
         }
+
+
+def get_map_listings(
+    source: str | None = None,
+    min_price: int | None = None,
+    max_price: int | None = None,
+    min_beds: int | None = None,
+    status: str | None = None,
+    is_favorite: bool | None = None,
+) -> list[dict]:
+    where, params = _build_where(source, min_price, max_price, min_beds, status, is_favorite)
+    coord_clause = "latitude IS NOT NULL AND longitude IS NOT NULL"
+    if where:
+        where += f" AND {coord_clause}"
+    else:
+        where = f" WHERE {coord_clause}"
+    with _connect() as conn:
+        sql = (
+            "SELECT id, latitude, longitude, price, address, beds, baths, "
+            f"thumbnail_path, neighborhood, no_fee, source FROM listings{where}"
+        )
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
 
 
 def get_listing(listing_id: int) -> dict | None:
@@ -257,4 +311,36 @@ def update_thumbnail_path(listing_id: int, path: str) -> None:
         conn.execute(
             "UPDATE listings SET thumbnail_path = ? WHERE id = ?",
             (path, listing_id),
+        )
+
+
+def get_listings_needing_geocoding(limit: int = 20) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, address, neighborhood
+            FROM listings
+            WHERE address IS NOT NULL
+              AND latitude IS NULL
+              AND (geocode_status IS NULL OR geocode_status = 'pending')
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def update_coordinates(listing_id: int, lat: float, lng: float) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE listings SET latitude = ?, longitude = ?, geocode_status = 'success' WHERE id = ?",
+            (lat, lng, listing_id),
+        )
+
+
+def mark_geocode_failed(listing_id: int, reason: str = "no_result") -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE listings SET geocode_status = ? WHERE id = ?",
+            (reason, listing_id),
         )

@@ -159,6 +159,8 @@ def build_streeteasy_crawler(
                 const bedsEl = card.querySelector('[class*="bed"], [data-testid*="bed"]');
                 const bathsEl = card.querySelector('[class*="bath"], [data-testid*="bath"]');
                 const imgEl = card.querySelector('img[src]');
+                const neighEl = card.querySelector('[class*="neighborhood"], [class*="area"], [class*="location"]');
+                const detailsEl = card.querySelector('[class*="details"], [class*="info"]');
                 return {
                     url: link ? link.href : null,
                     price: priceEl ? priceEl.textContent : null,
@@ -166,6 +168,8 @@ def build_streeteasy_crawler(
                     beds: bedsEl ? bedsEl.textContent : null,
                     baths: bathsEl ? bathsEl.textContent : null,
                     image: imgEl ? imgEl.src : null,
+                    neighborhood: neighEl ? neighEl.textContent : null,
+                    details: detailsEl ? detailsEl.textContent : null,
                 };
             });
         }""")
@@ -375,6 +379,37 @@ def build_streeteasy_crawler(
         if no_fee is None:
             no_fee = amenities.get("no_fee")
 
+        # Date listed
+        date_listed = None
+        if json_ld and "datePosted" in json_ld:
+            date_listed = str(json_ld["datePosted"])
+        if not date_listed:
+            try:
+                date_texts = await page.eval_on_selector_all(
+                    '[class*="Vitals"] li, [class*="detail"] li, .details-info li',
+                    "els => els.map(e => e.textContent).filter(Boolean)",
+                )
+                import re as _re
+                for t in (date_texts or []):
+                    m = _re.search(r"(?:listed|posted)\s*(?:on\s*)?(\w+ \d{1,2},?\s*\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", t, _re.IGNORECASE)
+                    if m:
+                        date_listed = m.group(1).strip()
+                        break
+            except Exception:
+                pass
+
+        # Coordinates from JSON-LD geo
+        latitude = None
+        longitude = None
+        if json_ld:
+            geo = json_ld.get("geo")
+            if isinstance(geo, dict):
+                try:
+                    latitude = float(geo.get("latitude", 0)) or None
+                    longitude = float(geo.get("longitude", 0)) or None
+                except (ValueError, TypeError):
+                    pass
+
         log.info("[streeteasy] Parsed: price=%s, beds=%s, baths=%s, addr=%r, sqft=%s",
                  price, beds, baths, address, sqft)
 
@@ -404,6 +439,9 @@ def build_streeteasy_crawler(
             no_fee=no_fee,
             available_date=amenities.get("available_date"),
             floor=amenities.get("floor"),
+            date_listed=date_listed,
+            latitude=latitude,
+            longitude=longitude,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
@@ -424,7 +462,6 @@ def build_streeteasy_crawler(
 def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable | None) -> bool:
     """Parse a JSON-LD ApartmentComplex/Apartment item and save it."""
     try:
-        # Price from additionalProperty or offers
         price = None
         additional = item.get("additionalProperty", {})
         if isinstance(additional, dict) and additional.get("value"):
@@ -439,16 +476,36 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
                 except (ValueError, TypeError):
                     pass
 
-        # Address
         addr_obj = item.get("address", {})
-        address = None
-        if isinstance(addr_obj, dict):
-            address = addr_obj.get("streetAddress")
-        neighborhood = None
-        if isinstance(addr_obj, dict):
-            neighborhood = addr_obj.get("addressLocality")
+        address = addr_obj.get("streetAddress") if isinstance(addr_obj, dict) else None
+        neighborhood = addr_obj.get("addressLocality") if isinstance(addr_obj, dict) else None
 
-        # Image
+        beds = None
+        if "numberOfBedrooms" in item:
+            try:
+                beds = int(item["numberOfBedrooms"])
+            except (ValueError, TypeError):
+                pass
+
+        baths = None
+        if "numberOfBathroomsTotal" in item:
+            try:
+                baths = float(item["numberOfBathroomsTotal"])
+            except (ValueError, TypeError):
+                pass
+
+        sqft = None
+        floor_size = item.get("floorSize")
+        if isinstance(floor_size, dict):
+            try:
+                sqft = int(str(floor_size.get("value", "")).replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+        elif isinstance(floor_size, (int, float)):
+            sqft = int(floor_size)
+
+        description = item.get("description")
+
         thumbnail = None
         photo = item.get("photo")
         if isinstance(photo, dict):
@@ -460,27 +517,55 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
             if isinstance(thumbnail, list):
                 thumbnail = thumbnail[0] if thumbnail else None
 
-        # URL
         listing_url = item.get("url") or ""
         if not listing_url:
             listing_url = f"https://streeteasy.com/building/{item.get('name', 'unknown')}"
+
+        date_listed = item.get("datePosted")
+
+        latitude = None
+        longitude = None
+        geo = item.get("geo")
+        if isinstance(geo, dict):
+            try:
+                latitude = float(geo.get("latitude", 0)) or None
+                longitude = float(geo.get("longitude", 0)) or None
+            except (ValueError, TypeError):
+                pass
+
+        amenities = scan_amenities(description) if description else {}
 
         listing = Listing(
             source="streeteasy",
             url=listing_url or "https://streeteasy.com",
             price=price,
-            beds=None,
-            baths=None,
+            beds=beds,
+            baths=baths,
             address=address,
             neighborhood=neighborhood,
             thumbnail_url=thumbnail,
+            sqft=sqft,
+            description=description,
+            has_dishwasher=amenities.get("has_dishwasher"),
+            has_balcony=amenities.get("has_balcony"),
+            laundry=amenities.get("laundry"),
+            has_doorman=amenities.get("has_doorman"),
+            has_elevator=amenities.get("has_elevator"),
+            has_gym=amenities.get("has_gym"),
+            pets_allowed=amenities.get("pets_allowed"),
+            no_fee=amenities.get("no_fee"),
+            available_date=amenities.get("available_date"),
+            floor=amenities.get("floor"),
+            date_listed=str(date_listed) if date_listed else None,
+            latitude=latitude,
+            longitude=longitude,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
-            log.info("[streeteasy] Saved JSON-LD listing: %s ($%s)", address, price)
+            log.info("[streeteasy] Saved JSON-LD listing: %s ($%s, %sbd)", address, price, beds)
             return True
     except Exception:
         log.debug("Failed to process JSON-LD listing", exc_info=True)
@@ -512,6 +597,15 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
         if m_bath:
             baths = float(m_bath.group(1))
 
+        sqft = None
+        sqft_text = card.get("sqft") or card.get("details") or ""
+        m_sqft = _SQFT_RE.search(sqft_text)
+        if m_sqft:
+            try:
+                sqft = int(m_sqft.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
         listing = Listing(
             source="streeteasy",
             url=url,
@@ -519,7 +613,9 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
             beds=beds,
             baths=baths,
             address=card.get("address"),
+            neighborhood=card.get("neighborhood"),
             thumbnail_url=card.get("image"),
+            sqft=sqft,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):

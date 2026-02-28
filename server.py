@@ -8,8 +8,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from db import get_all_listings, get_listing, get_sources, get_stats, init_db, update_listing
-from worker import THUMBNAIL_DIR, crawl_manager, thumbnail_worker
+from db import get_all_listings, get_listing, get_map_listings, get_sources, get_stats, init_db, update_listing
+from worker import THUMBNAIL_DIR, crawl_manager, geocoding_worker, thumbnail_worker
 
 STATIC_DIR = Path(__file__).resolve().parent / "frontend" / "out"
 
@@ -20,11 +20,13 @@ app = FastAPI(title="Rent Lobster")
 def startup() -> None:
     init_db()
     thumbnail_worker.start()
+    geocoding_worker.start()
 
 
 @app.on_event("shutdown")
 def shutdown() -> None:
     thumbnail_worker.stop()
+    geocoding_worker.stop()
 
 
 # ---- Listings API ---------------------------------------------------------
@@ -37,6 +39,7 @@ def api_listings(
     min_beds: int | None = Query(None),
     status: str | None = Query(None),
     is_favorite: bool | None = Query(None),
+    sort: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=100),
 ) -> dict:
@@ -47,6 +50,7 @@ def api_listings(
         min_beds=min_beds,
         status=status,
         is_favorite=is_favorite,
+        sort=sort,
         page=page,
         per_page=per_page,
     )
@@ -69,6 +73,25 @@ def api_listing_update(listing_id: int, body: dict[str, Any]) -> dict:
     if updated is None:
         raise HTTPException(500, "Failed to update listing")
     return updated
+
+
+@app.get("/api/listings/map")
+def api_listings_map(
+    source: str | None = Query(None),
+    min_price: int | None = Query(None),
+    max_price: int | None = Query(None),
+    min_beds: int | None = Query(None),
+    status: str | None = Query(None),
+    is_favorite: bool | None = Query(None),
+) -> list[dict]:
+    return get_map_listings(
+        source=source,
+        min_price=min_price,
+        max_price=max_price,
+        min_beds=min_beds,
+        status=status,
+        is_favorite=is_favorite,
+    )
 
 
 @app.get("/api/sources")
@@ -136,3 +159,5 @@ if STATIC_DIR.is_dir():
     next_dir = STATIC_DIR / "_next"
     if next_dir.is_dir():
         app.mount("/_next", StaticFiles(directory=str(next_dir)), name="nextjs")
+
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR)), name="static")

@@ -218,6 +218,31 @@ def build_craigslist_crawler(
         except Exception:
             pass
 
+        # Date listed from <time> element
+        date_listed = None
+        try:
+            date_listed = await context.page.eval_on_selector_all(
+                "time.date[datetime], time.timeago[datetime]",
+                "els => els.map(e => e.getAttribute('datetime')).filter(Boolean)",
+            )
+            date_listed = date_listed[0] if date_listed else None
+        except Exception:
+            pass
+
+        # Coordinates from the map
+        latitude = None
+        longitude = None
+        try:
+            map_el = await context.page.query_selector("#map[data-latitude][data-longitude]")
+            if map_el:
+                lat_str = await map_el.get_attribute("data-latitude")
+                lng_str = await map_el.get_attribute("data-longitude")
+                if lat_str and lng_str:
+                    latitude = float(lat_str)
+                    longitude = float(lng_str)
+        except Exception:
+            pass
+
         listing = Listing(
             source="craigslist",
             url=url,
@@ -244,6 +269,9 @@ def build_craigslist_crawler(
             no_fee=amenities.get("no_fee"),
             available_date=amenities.get("available_date"),
             floor=amenities.get("floor"),
+            date_listed=date_listed,
+            latitude=latitude,
+            longitude=longitude,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):

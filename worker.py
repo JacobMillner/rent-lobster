@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from db import get_listings_needing_thumbnails, update_thumbnail_path
+from db import get_listings_needing_geocoding, get_listings_needing_thumbnails, mark_geocode_failed, update_coordinates, update_thumbnail_path
 
 log = logging.getLogger(__name__)
 
@@ -243,6 +243,78 @@ class ThumbnailWorker:
             log.debug("Failed to download thumbnail for listing %s", listing_id)
 
 
+# ---------------------------------------------------------------------------
+# Geocoding worker — resolves addresses to lat/lng via Nominatim (OSM)
+# ---------------------------------------------------------------------------
+
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+
+
+class GeocodingWorker:
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                rows = get_listings_needing_geocoding(limit=10)
+                if not rows:
+                    self._stop.wait(30)
+                    continue
+                for row in rows:
+                    if self._stop.is_set():
+                        break
+                    self._geocode_one(row)
+                    # Nominatim requires max 1 request/second
+                    self._stop.wait(1.1)
+            except Exception:
+                log.exception("Geocoding worker error")
+                self._stop.wait(15)
+
+    @staticmethod
+    def _geocode_one(row: dict) -> None:
+        listing_id = row["id"]
+        query = row["address"] or ""
+        if row.get("neighborhood"):
+            query = f"{query}, {row['neighborhood']}"
+        query = query.strip(", ")
+        if not query:
+            mark_geocode_failed(listing_id, "no_address")
+            return
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(
+                    _NOMINATIM_URL,
+                    params={"q": query, "format": "json", "limit": 1},
+                    headers={"User-Agent": "RentLobster/1.0 (apartment search tool)"},
+                )
+                resp.raise_for_status()
+                results = resp.json()
+                if results and isinstance(results, list) and len(results) > 0:
+                    lat = float(results[0]["lat"])
+                    lon = float(results[0]["lon"])
+                    update_coordinates(listing_id, lat, lon)
+                    log.info("[geocoding] Resolved listing %s: %s -> (%s, %s)", listing_id, query, lat, lon)
+                else:
+                    mark_geocode_failed(listing_id, "no_result")
+                    log.info("[geocoding] No results for listing %s: %s", listing_id, query)
+        except Exception:
+            mark_geocode_failed(listing_id, "error")
+            log.debug("Failed to geocode listing %s: %s", listing_id, query, exc_info=True)
+
+
 # Module-level singletons
 crawl_manager = CrawlManager()
 thumbnail_worker = ThumbnailWorker()
+geocoding_worker = GeocodingWorker()

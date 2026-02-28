@@ -30,6 +30,9 @@ class Listing(BaseModel):
     no_fee: bool | None = None
     available_date: str | None = None
     floor: str | None = None
+    date_listed: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
 
     def matches(self, *, min_beds: int, min_baths: int, max_rent: int) -> bool:
         if self.price is not None and self.price > max_rent:

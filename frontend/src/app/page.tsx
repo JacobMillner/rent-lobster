@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import dynamic from "next/dynamic";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,6 +35,9 @@ interface Listing {
   no_fee: number | null;
   available_date: string | null;
   floor: string | null;
+  date_listed: string | null;
+  latitude: number | null;
+  longitude: number | null;
   status: string | null;
   is_favorite: number | null;
   notes: string | null;
@@ -63,6 +67,20 @@ interface CrawlStatus {
   listings_found?: number;
   current_spider?: string | null;
   error?: string | null;
+}
+
+interface MapListing {
+  id: number;
+  latitude: number;
+  longitude: number;
+  price: number | null;
+  address: string | null;
+  beds: number | null;
+  baths: number | null;
+  thumbnail_path: string | null;
+  neighborhood: string | null;
+  no_fee: number | null;
+  source: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +334,114 @@ function Pagination({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Map component (dynamically loaded to avoid SSR issues with Leaflet)
+// ---------------------------------------------------------------------------
+
+function ListingsMapInner({
+  markers,
+  onMarkerClick,
+}: {
+  markers: MapListing[];
+  onMarkerClick: (id: number) => void;
+}) {
+  const L = require("leaflet") as typeof import("leaflet");
+  const { MapContainer, TileLayer, Marker, Popup, useMap } = require("react-leaflet");
+
+  require("leaflet/dist/leaflet.css");
+
+  const defaultIcon = useMemo(() => {
+    return L.divIcon({
+      className: "",
+      html: `<div style="
+        background:#dc2626;width:12px;height:12px;border-radius:50%;
+        border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);
+      "></div>`,
+      iconSize: [12, 12],
+      iconAnchor: [6, 6],
+      popupAnchor: [0, -8],
+    });
+  }, [L]);
+
+  function FitBounds({ markers }: { markers: MapListing[] }) {
+    const map = useMap();
+    useEffect(() => {
+      if (markers.length === 0) return;
+      const bounds = L.latLngBounds(
+        markers.map((m) => [m.latitude, m.longitude] as [number, number])
+      );
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
+    }, [markers, map]);
+    return null;
+  }
+
+  if (markers.length === 0) {
+    return (
+      <div style={{ textAlign: "center", padding: 60, color: "#6b7280" }}>
+        No listings with map coordinates yet. Coordinates are resolved automatically in the background.
+      </div>
+    );
+  }
+
+  const center: [number, number] = [
+    markers.reduce((s, m) => s + m.latitude, 0) / markers.length,
+    markers.reduce((s, m) => s + m.longitude, 0) / markers.length,
+  ];
+
+  return (
+    <MapContainer
+      center={center}
+      zoom={12}
+      style={{ height: 600, width: "100%", borderRadius: 12, overflow: "hidden" }}
+    >
+      <TileLayer
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+      />
+      <FitBounds markers={markers} />
+      {markers.map((m) => (
+        <Marker key={m.id} position={[m.latitude, m.longitude]} icon={defaultIcon}>
+          <Popup>
+            <div style={{ minWidth: 180, fontSize: 13 }}>
+              {m.thumbnail_path && (
+                <img
+                  src={`/api/thumbnails/${m.thumbnail_path}`}
+                  alt=""
+                  style={{ width: "100%", height: 80, objectFit: "cover", borderRadius: 4, marginBottom: 6 }}
+                />
+              )}
+              <div style={{ fontWeight: 700, fontSize: 16, color: "#111827" }}>
+                {m.price ? `$${m.price.toLocaleString()}` : "\u2014"}
+                {m.no_fee ? <span style={{ fontSize: 10, color: "#16a34a", marginLeft: 6 }}>No Fee</span> : null}
+              </div>
+              {m.address && <div style={{ color: "#374151", marginTop: 2 }}>{m.address}</div>}
+              {m.neighborhood && <div style={{ color: "#6b7280", fontSize: 12 }}>{m.neighborhood}</div>}
+              <div style={{ color: "#6b7280", marginTop: 2 }}>
+                {m.beds != null ? `${m.beds} bed` : ""}
+                {m.baths != null ? ` \u00b7 ${m.baths} bath` : ""}
+              </div>
+              <button
+                onClick={() => onMarkerClick(m.id)}
+                style={{
+                  marginTop: 6, padding: "4px 10px", borderRadius: 6, border: "1px solid #dc2626",
+                  background: "white", color: "#dc2626", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                View Details
+              </button>
+            </div>
+          </Popup>
+        </Marker>
+      ))}
+    </MapContainer>
+  );
+}
+
+const ListingsMap = dynamic(
+  () => Promise.resolve(ListingsMapInner),
+  { ssr: false, loading: () => <div style={{ textAlign: "center", padding: 60, color: "#6b7280" }}>Loading map...</div> }
+);
 
 // ---------------------------------------------------------------------------
 // Editable field component
@@ -623,6 +749,7 @@ export default function Home() {
   const [filterMinBeds, setFilterMinBeds] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [filterFavorites, setFilterFavorites] = useState(false);
+  const [sortBy, setSortBy] = useState("date_listed");
 
   // Crawl controls
   const [selectedSpiders, setSelectedSpiders] = useState<Set<string>>(
@@ -631,6 +758,10 @@ export default function Home() {
   const [maxPages, setMaxPages] = useState("50");
   const [crawlStatus, setCrawlStatus] = useState<CrawlStatus | null>(null);
   const [starting, setStarting] = useState(false);
+
+  // View toggle
+  const [viewMode, setViewMode] = useState<"list" | "map">("list");
+  const [mapListings, setMapListings] = useState<MapListing[]>([]);
 
   // Modal
   const [modalListingId, setModalListingId] = useState<number | null>(null);
@@ -648,6 +779,7 @@ export default function Home() {
       if (filterMinBeds) params.set("min_beds", filterMinBeds);
       if (filterStatus) params.set("status", filterStatus);
       if (filterFavorites) params.set("is_favorite", "true");
+      if (sortBy) params.set("sort", sortBy);
       params.set("page", String(p ?? page));
       params.set("per_page", String(PER_PAGE));
       const qs = params.toString();
@@ -662,7 +794,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [filterSource, filterMaxPrice, filterMinBeds, filterStatus, filterFavorites, page]);
+  }, [filterSource, filterMaxPrice, filterMinBeds, filterStatus, filterFavorites, sortBy, page]);
 
   const fetchMeta = useCallback(async () => {
     try {
@@ -686,6 +818,22 @@ export default function Home() {
     }
   }, []);
 
+  const fetchMapListings = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (filterSource) params.set("source", filterSource);
+      if (filterMaxPrice) params.set("max_price", filterMaxPrice);
+      if (filterMinBeds) params.set("min_beds", filterMinBeds);
+      if (filterStatus) params.set("status", filterStatus);
+      if (filterFavorites) params.set("is_favorite", "true");
+      const qs = params.toString();
+      const res = await fetch(`/api/listings/map?${qs}`);
+      if (res.ok) setMapListings(await res.json());
+    } catch {
+      /* ignore */
+    }
+  }, [filterSource, filterMaxPrice, filterMinBeds, filterStatus, filterFavorites]);
+
   // ------- Initial load ----------------------------------------------------
 
   useEffect(() => {
@@ -694,10 +842,15 @@ export default function Home() {
     fetchCrawlStatus();
   }, [fetchListings, fetchMeta, fetchCrawlStatus]);
 
+  useEffect(() => {
+    if (viewMode === "map") fetchMapListings();
+  }, [viewMode, fetchMapListings]);
+
   // Reset page when filters change
   const handleFilterApply = () => {
     setPage(1);
     fetchListings(1);
+    if (viewMode === "map") fetchMapListings();
   };
 
   // ------- Polling while crawl is running ----------------------------------
@@ -797,6 +950,7 @@ export default function Home() {
       {/* Header */}
       <header style={s.header}>
         <div style={s.headerInner}>
+          <img src="/logo.png" alt="Rent Lobster" style={s.headerLogo} />
           <h1 style={s.title}>Rent Lobster</h1>
           <p style={s.subtitle}>Apartment Listing Aggregator</p>
         </div>
@@ -948,6 +1102,17 @@ export default function Home() {
             onChange={setFilterFavorites}
           />
 
+          <select
+            style={s.select}
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+          >
+            <option value="date_listed">Newest Listed</option>
+            <option value="created_at">Recently Added</option>
+            <option value="price_asc">Price: Low to High</option>
+            <option value="price_desc">Price: High to Low</option>
+          </select>
+
           <button style={s.button} onClick={handleFilterApply}>
             Apply
           </button>
@@ -956,9 +1121,53 @@ export default function Home() {
         {/* ---- Error ---- */}
         {error && <p style={s.errorMsg}>{error}</p>}
 
+        {/* ---- View Toggle ---- */}
+        <div style={s.viewToggle}>
+          <div style={s.resultsMeta}>
+            <span style={{ color: "#6b7280", fontSize: 14 }}>
+              {total} listing{total !== 1 ? "s" : ""} found
+              {viewMode === "list" && totalPages > 1 ? ` \u2014 page ${page} of ${totalPages}` : ""}
+              {viewMode === "map" ? ` \u00b7 ${mapListings.length} on map` : ""}
+            </span>
+          </div>
+          <div style={s.toggleBtns}>
+            <button
+              style={{
+                ...s.toggleBtn,
+                ...(viewMode === "list" ? s.toggleBtnActive : {}),
+              }}
+              onClick={() => setViewMode("list")}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
+              </svg>
+              List
+            </button>
+            <button
+              style={{
+                ...s.toggleBtn,
+                ...(viewMode === "map" ? s.toggleBtnActive : {}),
+              }}
+              onClick={() => setViewMode("map")}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
+              Map
+            </button>
+          </div>
+        </div>
+
         {/* ---- Results ---- */}
         {loading ? (
           <p style={s.loadingMsg}>Loading listings...</p>
+        ) : viewMode === "map" ? (
+          <ListingsMap
+            markers={mapListings}
+            onMarkerClick={(id: number) => setModalListingId(id)}
+          />
         ) : listings.length === 0 ? (
           <div style={s.empty}>
             <p style={{ fontSize: 18, color: "#6b7280" }}>
@@ -968,12 +1177,6 @@ export default function Home() {
           </div>
         ) : (
           <>
-            <div style={s.resultsMeta}>
-              <span style={{ color: "#6b7280", fontSize: 14 }}>
-                {total} listing{total !== 1 ? "s" : ""} found
-                {totalPages > 1 ? ` \u2014 page ${page} of ${totalPages}` : ""}
-              </span>
-            </div>
             <div style={s.grid}>
               {listings.map((listing) => {
                 const status = getStatus(listing);
@@ -1037,7 +1240,9 @@ export default function Home() {
 
                     <div style={s.cardFooter}>
                       <span>
-                        {new Date(listing.created_at).toLocaleDateString()}
+                        {listing.date_listed
+                          ? `Listed ${new Date(listing.date_listed).toLocaleDateString()}`
+                          : new Date(listing.created_at).toLocaleDateString()}
                       </span>
                       <span style={s.linkText}>Details &rarr;</span>
                     </div>
@@ -1079,7 +1284,17 @@ const s: Record<string, React.CSSProperties> = {
     padding: "40px 20px",
     color: "white",
   },
-  headerInner: { maxWidth: 1200, margin: "0 auto" },
+  headerInner: { maxWidth: 1200, margin: "0 auto", position: "relative" as const },
+  headerLogo: {
+    position: "absolute" as const,
+    left: -70,
+    top: "50%",
+    transform: "translateY(-50%)",
+    width: 56,
+    height: 56,
+    objectFit: "contain" as const,
+    borderRadius: 10,
+  },
   title: { margin: 0, fontSize: 36, fontWeight: 800, letterSpacing: "-0.02em" },
   subtitle: { margin: "8px 0 0", fontSize: 16, opacity: 0.85, fontWeight: 400 },
 
@@ -1221,8 +1436,41 @@ const s: Record<string, React.CSSProperties> = {
     boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
   },
 
+  /* View toggle */
+  viewToggle: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+    flexWrap: "wrap" as const,
+    gap: 12,
+  },
+  toggleBtns: {
+    display: "flex",
+    gap: 0,
+    borderRadius: 8,
+    overflow: "hidden",
+    border: "1px solid #d1d5db",
+  },
+  toggleBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "8px 16px",
+    border: "none",
+    backgroundColor: "white",
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: "pointer",
+    color: "#374151",
+  },
+  toggleBtnActive: {
+    backgroundColor: "#dc2626",
+    color: "white",
+  },
+
   /* Results meta */
-  resultsMeta: { marginBottom: 12 },
+  resultsMeta: { marginBottom: 0 },
 
   /* Grid & Cards */
   grid: {

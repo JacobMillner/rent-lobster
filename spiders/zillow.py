@@ -187,6 +187,7 @@ def build_zillow_crawler(
                 const bedsEl = card.querySelector('[class*="bed"]');
                 const bathsEl = card.querySelector('[class*="bath"]');
                 const imgEl = card.querySelector('img[src]');
+                const detailsEl = card.querySelector('[class*="details"], [class*="info"]');
                 return {
                     url: link ? link.href : null,
                     price: priceEl ? priceEl.textContent : null,
@@ -194,6 +195,7 @@ def build_zillow_crawler(
                     beds: bedsEl ? bedsEl.textContent : null,
                     baths: bathsEl ? bathsEl.textContent : null,
                     image: imgEl ? imgEl.src : null,
+                    details: detailsEl ? detailsEl.textContent : null,
                 };
             });
         }""")
@@ -265,6 +267,11 @@ def build_zillow_crawler(
         except Exception:
             json_ld = None
 
+        neighborhood = None
+        date_listed = None
+        latitude = None
+        longitude = None
+
         if json_ld:
             log.info("[zillow] Found JSON-LD: type=%s", json_ld.get("@type"))
             if "offers" in json_ld:
@@ -272,7 +279,20 @@ def build_zillow_crawler(
                     price = int(str(json_ld["offers"].get("price", "")).replace(",", ""))
                 except (ValueError, TypeError):
                     pass
+            if "numberOfBedrooms" in json_ld:
+                try:
+                    beds = int(json_ld["numberOfBedrooms"])
+                except (ValueError, TypeError):
+                    pass
+            if "numberOfBathroomsTotal" in json_ld:
+                try:
+                    baths = float(json_ld["numberOfBathroomsTotal"])
+                except (ValueError, TypeError):
+                    pass
             address = json_ld.get("name") or json_ld.get("address", {}).get("streetAddress")
+            addr_obj = json_ld.get("address", {})
+            if isinstance(addr_obj, dict):
+                neighborhood = addr_obj.get("addressLocality")
             thumbnail = json_ld.get("image")
             if isinstance(thumbnail, dict):
                 thumbnail = thumbnail.get("image") or thumbnail.get("url")
@@ -286,6 +306,14 @@ def build_zillow_crawler(
                     pass
             elif isinstance(floor_size, (int, float)):
                 sqft = int(floor_size)
+            date_listed = json_ld.get("datePosted")
+            geo = json_ld.get("geo")
+            if isinstance(geo, dict):
+                try:
+                    latitude = float(geo.get("latitude", 0)) or None
+                    longitude = float(geo.get("longitude", 0)) or None
+                except (ValueError, TypeError):
+                    pass
 
         if price is None:
             m = _PRICE_RE.search(body_text)
@@ -310,6 +338,23 @@ def build_zillow_crawler(
                 pass
         if not address:
             address = title.split("|")[0].strip() if title else None
+
+        # Neighborhood from DOM
+        if not neighborhood:
+            for neigh_sel in [
+                '[data-testid="fs-chip-text"]',
+                'nav[aria-label="breadcrumb"] a',
+                '.ds-chip a',
+                '[class*="neighborhood"]',
+            ]:
+                try:
+                    neigh_el = await page.query_selector(neigh_sel)
+                    if neigh_el:
+                        neighborhood = (await neigh_el.text_content() or "").strip()
+                        if neighborhood:
+                            break
+                except Exception:
+                    continue
 
         # Description
         for desc_sel in ['.Text-c11n', '[data-testid="description"]', '[class*="description"]',
@@ -357,8 +402,13 @@ def build_zillow_crawler(
             except Exception:
                 continue
 
-        log.info("[zillow] Parsed: price=%s, beds=%s, baths=%s, addr=%r, sqft=%s",
-                 price, beds, baths, address, sqft)
+        # No-fee detection
+        no_fee = amenities.get("no_fee")
+        if not no_fee and "no fee" in body_text.lower():
+            no_fee = True
+
+        log.info("[zillow] Parsed: price=%s, beds=%s, baths=%s, addr=%r, sqft=%s, neigh=%r",
+                 price, beds, baths, address, sqft, neighborhood)
 
         listing = Listing(
             source="zillow",
@@ -367,6 +417,7 @@ def build_zillow_crawler(
             beds=beds,
             baths=baths,
             address=address,
+            neighborhood=neighborhood,
             thumbnail_url=thumbnail,
             sqft=sqft,
             description=description,
@@ -382,9 +433,12 @@ def build_zillow_crawler(
             has_elevator=amenities.get("has_elevator"),
             has_gym=amenities.get("has_gym"),
             pets_allowed=amenities.get("pets_allowed"),
-            no_fee=amenities.get("no_fee"),
+            no_fee=no_fee,
             available_date=amenities.get("available_date"),
             floor=amenities.get("floor"),
+            date_listed=str(date_listed) if date_listed else None,
+            latitude=latitude,
+            longitude=longitude,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
@@ -423,6 +477,32 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
         address = addr_obj.get("streetAddress") if isinstance(addr_obj, dict) else None
         neighborhood = addr_obj.get("addressLocality") if isinstance(addr_obj, dict) else None
 
+        beds = None
+        if "numberOfBedrooms" in item:
+            try:
+                beds = int(item["numberOfBedrooms"])
+            except (ValueError, TypeError):
+                pass
+
+        baths = None
+        if "numberOfBathroomsTotal" in item:
+            try:
+                baths = float(item["numberOfBathroomsTotal"])
+            except (ValueError, TypeError):
+                pass
+
+        sqft = None
+        floor_size = item.get("floorSize")
+        if isinstance(floor_size, dict):
+            try:
+                sqft = int(str(floor_size.get("value", "")).replace(",", ""))
+            except (ValueError, TypeError):
+                pass
+        elif isinstance(floor_size, (int, float)):
+            sqft = int(floor_size)
+
+        description = item.get("description")
+
         thumbnail = None
         photo = item.get("photo")
         if isinstance(photo, dict):
@@ -437,23 +517,51 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
                 thumbnail = img
 
         listing_url = item.get("url") or "https://www.zillow.com"
+        date_listed = item.get("datePosted")
+
+        latitude = None
+        longitude = None
+        geo = item.get("geo")
+        if isinstance(geo, dict):
+            try:
+                latitude = float(geo.get("latitude", 0)) or None
+                longitude = float(geo.get("longitude", 0)) or None
+            except (ValueError, TypeError):
+                pass
+
+        amenities = scan_amenities(description) if description else {}
 
         listing = Listing(
             source="zillow",
             url=listing_url,
             price=price,
-            beds=None,
-            baths=None,
+            beds=beds,
+            baths=baths,
             address=address,
             neighborhood=neighborhood,
             thumbnail_url=thumbnail,
+            sqft=sqft,
+            description=description,
+            has_dishwasher=amenities.get("has_dishwasher"),
+            has_balcony=amenities.get("has_balcony"),
+            laundry=amenities.get("laundry"),
+            has_doorman=amenities.get("has_doorman"),
+            has_elevator=amenities.get("has_elevator"),
+            has_gym=amenities.get("has_gym"),
+            pets_allowed=amenities.get("pets_allowed"),
+            no_fee=amenities.get("no_fee"),
+            available_date=amenities.get("available_date"),
+            floor=amenities.get("floor"),
+            date_listed=str(date_listed) if date_listed else None,
+            latitude=latitude,
+            longitude=longitude,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
-            log.info("[zillow] Saved JSON-LD listing: %s ($%s)", address, price)
+            log.info("[zillow] Saved JSON-LD listing: %s ($%s, %sbd)", address, price, beds)
             return True
     except Exception:
         log.debug("Failed to process JSON-LD listing", exc_info=True)
@@ -485,6 +593,15 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
         if m_bath:
             baths = float(m_bath.group(1))
 
+        sqft = None
+        sqft_text = card.get("sqft") or card.get("details") or ""
+        m_sqft = _SQFT_RE.search(sqft_text)
+        if m_sqft:
+            try:
+                sqft = int(m_sqft.group(1).replace(",", ""))
+            except ValueError:
+                pass
+
         listing = Listing(
             source="zillow",
             url=url,
@@ -493,6 +610,7 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
             baths=baths,
             address=card.get("address"),
             thumbnail_url=card.get("image"),
+            sqft=sqft,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
@@ -547,10 +665,12 @@ def _extract_from_preloaded(data: dict, settings: Settings, on_listing: Callable
 def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable | None) -> bool:
     """Process a single Zillow listing item from preloaded data."""
     try:
+        home_info = item.get("hdpData", {}).get("homeInfo", {})
+
         price = (
             item.get("price")
             or item.get("unformattedPrice")
-            or item.get("hdpData", {}).get("homeInfo", {}).get("price")
+            or home_info.get("price")
         )
         if isinstance(price, str):
             price = int(re.sub(r"[^\d]", "", price) or "0") or None
@@ -559,13 +679,48 @@ def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable
         if detail_url and not detail_url.startswith("http"):
             detail_url = f"https://www.zillow.com{detail_url}"
 
-        beds = item.get("beds") or item.get("bedrooms")
-        baths = item.get("baths") or item.get("bathrooms")
+        beds = item.get("beds") or item.get("bedrooms") or home_info.get("bedrooms")
+        baths = item.get("baths") or item.get("bathrooms") or home_info.get("bathrooms")
         addr = item.get("address") or item.get("streetAddress")
         if isinstance(addr, dict):
             addr = addr.get("streetAddress") or str(addr)
 
+        sqft = item.get("livingArea") or item.get("area") or home_info.get("livingArea")
+        if isinstance(sqft, str):
+            sqft = int(re.sub(r"[^\d]", "", sqft) or "0") or None
+
+        neighborhood = item.get("neighborhood") or home_info.get("neighborhood")
+
         img = item.get("imgSrc") or item.get("image") or item.get("thumbnailUrl")
+
+        # Coordinates
+        latitude = None
+        longitude = None
+        lat_long = item.get("latLong") or {}
+        if isinstance(lat_long, dict):
+            try:
+                latitude = float(lat_long.get("latitude", 0)) or None
+                longitude = float(lat_long.get("longitude", 0)) or None
+            except (ValueError, TypeError):
+                pass
+        if not latitude:
+            try:
+                latitude = float(item.get("latitude") or home_info.get("latitude") or 0) or None
+                longitude = float(item.get("longitude") or home_info.get("longitude") or 0) or None
+            except (ValueError, TypeError):
+                pass
+
+        # Date listed
+        date_listed = item.get("dateListed") or home_info.get("dateListed")
+        if not date_listed:
+            days_on = item.get("daysOnZillow") or home_info.get("daysOnZillow")
+            if days_on is not None:
+                try:
+                    from datetime import datetime, timedelta
+                    listed = datetime.now() - timedelta(days=int(days_on))
+                    date_listed = listed.strftime("%Y-%m-%d")
+                except (ValueError, TypeError):
+                    pass
 
         listing = Listing(
             source="zillow",
@@ -574,7 +729,12 @@ def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable
             beds=int(beds) if beds else None,
             baths=float(baths) if baths else None,
             address=str(addr) if addr else None,
+            neighborhood=str(neighborhood) if neighborhood else None,
             thumbnail_url=img,
+            sqft=int(sqft) if sqft else None,
+            date_listed=str(date_listed) if date_listed else None,
+            latitude=latitude,
+            longitude=longitude,
         )
 
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
