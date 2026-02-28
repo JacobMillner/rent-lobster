@@ -9,6 +9,8 @@ dependencies = [
   "pydantic",
   "httpx",
   "browserforge",
+  "fastapi",
+  "uvicorn[standard]",
 ]
 
 [project.optional-dependencies]

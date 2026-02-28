@@ -4,12 +4,14 @@ from crawlee import Request
 import asyncio
 
 from config import Settings
+from db import init_db
 from spiders.zillow import build_zillow_crawler
 from spiders.streeteasy import build_streeteasy_crawler
 from spiders.craigslist import build_craigslist_crawler
 
 
 async def main() -> None:
+    init_db()
     settings = Settings()
 
     if settings.zillow_start_urls:

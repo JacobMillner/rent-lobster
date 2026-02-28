@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 
 from config import Settings
+from db import upsert_listing
 from models import Listing
 
 _PRICE_RE = re.compile(r"\$([\d,]+)")
@@ -125,8 +126,8 @@ def build_craigslist_crawler(settings: Settings) -> PlaywrightCrawler:
             address=title.strip() or None,
         )
 
-        # Apply your filters if you want to only store matches:
         if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+            upsert_listing(listing)
             await context.push_data(listing.model_dump())
         else:
             context.log.info(f"[craigslist] Filtered out: {listing.url} (${listing.price}, {listing.beds}br, {listing.baths}ba)")
