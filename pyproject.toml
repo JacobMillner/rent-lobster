@@ -1,0 +1,22 @@
+[project]
+name = "rent-lobster"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "crawlee",
+  "playwright",
+  "python-dotenv",
+  "pydantic",
+  "httpx",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
+  "mypy",
+]
+
+[tool.uv]
+# Optional: if you want uv to always prefer the lock
+# (uv sync already does)
