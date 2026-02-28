@@ -39,7 +39,7 @@ install: playwright
 	@echo "Installed. Use: make run"
 
 run: sync
-	uv run python -m apt_scout.run
+	uv run python run.py
 
 test: sync
 	uv run pytest -q

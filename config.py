@@ -41,5 +41,6 @@ class Settings:
 
     zillow_start_urls: list[str] = tuple(_get_urls("ZILLOW_START_URLS"))  # type: ignore
     streeteasy_start_urls: list[str] = tuple(_get_urls("STREETEASY_START_URLS"))  # type: ignore
+    craigslist_start_urls: list[str] = tuple(_get_urls("CRAIGSLIST_START_URLS"))  # type: ignore
 
     discord_webhook_url: str = _get_str("DISCORD_WEBHOOK_URL")

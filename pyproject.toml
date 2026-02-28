@@ -8,6 +8,7 @@ dependencies = [
   "python-dotenv",
   "pydantic",
   "httpx",
+  "browserforge",
 ]
 
 [project.optional-dependencies]
