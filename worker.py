@@ -30,6 +30,7 @@ class CrawlJob:
     status: str = "pending"
     spiders: list[str] = field(default_factory=list)
     max_pages: int = 50
+    listing_type: str = "rental"
     pages_crawled: int = 0
     listings_found: int = 0
     current_spider: str | None = None
@@ -45,6 +46,7 @@ class CrawlJob:
                 "status": self.status,
                 "spiders": self.spiders,
                 "max_pages": self.max_pages,
+                "listing_type": self.listing_type,
                 "pages_crawled": self.pages_crawled,
                 "listings_found": self.listings_found,
                 "current_spider": self.current_spider,
@@ -87,11 +89,11 @@ class CrawlManager:
     def current_job(self) -> CrawlJob | None:
         return self._current
 
-    def start(self, spiders: list[str], max_pages: int) -> CrawlJob:
+    def start(self, spiders: list[str], max_pages: int, listing_type: str = "rental") -> CrawlJob:
         with self._lock:
             if self._current and self._current.status == "running":
                 raise RuntimeError("A crawl is already running")
-            job = CrawlJob(spiders=list(spiders), max_pages=max_pages)
+            job = CrawlJob(spiders=list(spiders), max_pages=max_pages, listing_type=listing_type)
             self._current = job
             asyncio.run_coroutine_threadsafe(self._crawl_wrapper(job), self._loop)
             return job
@@ -129,66 +131,76 @@ class CrawlManager:
 
         self._purge_storage()
         settings = Settings()
+        is_sale = job.listing_type == "sale"
 
         for spider_name in job.spiders:
             job.current_spider = spider_name
             config = self._spider_config(spider_name)
-            log.info("[worker] Starting spider %s", spider_name)
+            log.info("[worker] Starting spider %s (listing_type=%s)", spider_name, job.listing_type)
 
-            if spider_name == "craigslist" and settings.craigslist_start_urls:
-                from spiders.craigslist import build_craigslist_crawler
+            if spider_name == "craigslist":
+                start_urls = settings.craigslist_sale_start_urls if is_sale else settings.craigslist_start_urls
+                if start_urls:
+                    from spiders.craigslist import build_craigslist_crawler
 
-                c = build_craigslist_crawler(
-                    settings,
-                    max_pages=job.max_pages,
-                    on_page=job.inc_pages,
-                    on_listing=job.inc_listings,
-                    configuration=config,
-                )
-                requests = [
-                    CrawleeRequest(
-                        url=u,
-                        unique_key=u,
-                        user_data={"seed_host": urlparse(u).netloc},
+                    c = build_craigslist_crawler(
+                        settings,
+                        max_pages=job.max_pages,
+                        on_page=job.inc_pages,
+                        on_listing=job.inc_listings,
+                        configuration=config,
+                        listing_type=job.listing_type,
                     )
-                    for u in settings.craigslist_start_urls
-                ]
-                log.info("[worker] craigslist: %d start URLs", len(requests))
-                await c.run(requests)
+                    requests = [
+                        CrawleeRequest(
+                            url=u,
+                            unique_key=u,
+                            user_data={"seed_host": urlparse(u).netloc},
+                        )
+                        for u in start_urls
+                    ]
+                    log.info("[worker] craigslist: %d start URLs", len(requests))
+                    await c.run(requests)
 
-            elif spider_name == "streeteasy" and settings.streeteasy_start_urls:
-                from spiders.streeteasy import build_streeteasy_crawler
+            elif spider_name == "streeteasy":
+                start_urls = settings.streeteasy_sale_start_urls if is_sale else settings.streeteasy_start_urls
+                if start_urls:
+                    from spiders.streeteasy import build_streeteasy_crawler
 
-                s = build_streeteasy_crawler(
-                    settings,
-                    max_pages=job.max_pages,
-                    on_page=job.inc_pages,
-                    on_listing=job.inc_listings,
-                    configuration=config,
-                )
-                requests = [
-                    CrawleeRequest(url=u, unique_key=u)
-                    for u in settings.streeteasy_start_urls
-                ]
-                log.info("[worker] streeteasy: %d start URLs: %s", len(requests), settings.streeteasy_start_urls)
-                await s.run(requests)
+                    s = build_streeteasy_crawler(
+                        settings,
+                        max_pages=job.max_pages,
+                        on_page=job.inc_pages,
+                        on_listing=job.inc_listings,
+                        configuration=config,
+                        listing_type=job.listing_type,
+                    )
+                    requests = [
+                        CrawleeRequest(url=u, unique_key=u)
+                        for u in start_urls
+                    ]
+                    log.info("[worker] streeteasy: %d start URLs: %s", len(requests), start_urls)
+                    await s.run(requests)
 
-            elif spider_name == "zillow" and settings.zillow_start_urls:
-                from spiders.zillow import build_zillow_crawler
+            elif spider_name == "zillow":
+                start_urls = settings.zillow_sale_start_urls if is_sale else settings.zillow_start_urls
+                if start_urls:
+                    from spiders.zillow import build_zillow_crawler
 
-                z = build_zillow_crawler(
-                    settings,
-                    max_pages=job.max_pages,
-                    on_page=job.inc_pages,
-                    on_listing=job.inc_listings,
-                    configuration=config,
-                )
-                requests = [
-                    CrawleeRequest(url=u, unique_key=u)
-                    for u in settings.zillow_start_urls
-                ]
-                log.info("[worker] zillow: %d start URLs: %s", len(requests), settings.zillow_start_urls)
-                await z.run(requests)
+                    z = build_zillow_crawler(
+                        settings,
+                        max_pages=job.max_pages,
+                        on_page=job.inc_pages,
+                        on_listing=job.inc_listings,
+                        configuration=config,
+                        listing_type=job.listing_type,
+                    )
+                    requests = [
+                        CrawleeRequest(url=u, unique_key=u)
+                        for u in start_urls
+                    ]
+                    log.info("[worker] zillow: %d start URLs: %s", len(requests), start_urls)
+                    await z.run(requests)
 
             log.info("[worker] Spider %s finished", spider_name)
 

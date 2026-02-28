@@ -51,15 +51,23 @@ _MIGRATIONS: list[tuple[str, str]] = [
     ("status", "TEXT DEFAULT 'new'"),
     ("is_favorite", "INTEGER DEFAULT 0"),
     ("notes", "TEXT"),
+    # Listing type discriminator
+    ("listing_type", "TEXT DEFAULT 'rental'"),
+    # Sale-specific fields
+    ("hoa_fee", "INTEGER"),
+    ("year_built", "INTEGER"),
+    ("property_type", "TEXT"),
+    ("tax_annual", "INTEGER"),
 ]
 
 _SCRAPE_FIELDS = [
-    "source", "url", "price", "beds", "baths", "address", "neighborhood",
-    "thumbnail_url", "sqft", "description", "contact_name", "contact_phone",
-    "contact_email", "subway_minutes", "nearest_subway", "has_dishwasher",
-    "has_balcony", "laundry", "has_doorman", "has_elevator", "has_gym",
-    "pets_allowed", "no_fee", "available_date", "floor", "date_listed",
-    "latitude", "longitude",
+    "source", "url", "listing_type", "price", "beds", "baths", "address",
+    "neighborhood", "thumbnail_url", "sqft", "description", "contact_name",
+    "contact_phone", "contact_email", "subway_minutes", "nearest_subway",
+    "has_dishwasher", "has_balcony", "laundry", "has_doorman", "has_elevator",
+    "has_gym", "pets_allowed", "no_fee", "available_date", "floor",
+    "date_listed", "latitude", "longitude",
+    "hoa_fee", "year_built", "property_type", "tax_annual",
 ]
 
 _ALLOWED_UPDATE_FIELDS = {
@@ -69,6 +77,7 @@ _ALLOWED_UPDATE_FIELDS = {
     "has_elevator", "has_gym", "pets_allowed", "no_fee", "available_date",
     "floor", "date_listed", "latitude", "longitude",
     "status", "is_favorite", "notes",
+    "hoa_fee", "year_built", "property_type", "tax_annual",
 }
 
 
@@ -101,7 +110,7 @@ def upsert_listing(listing: Listing) -> None:
 
     update_parts = []
     for f in _SCRAPE_FIELDS:
-        if f in ("source", "url"):
+        if f in ("source", "url", "listing_type"):
             continue
         update_parts.append(f"{f} = COALESCE(excluded.{f}, listings.{f})")
     update_clause = ", ".join(update_parts)
@@ -115,6 +124,7 @@ def upsert_listing(listing: Listing) -> None:
     values = (
         listing.source,
         str(listing.url),
+        listing.listing_type,
         listing.price,
         listing.beds,
         listing.baths,
@@ -141,6 +151,10 @@ def upsert_listing(listing: Listing) -> None:
         listing.date_listed,
         listing.latitude,
         listing.longitude,
+        listing.hoa_fee,
+        listing.year_built,
+        listing.property_type,
+        listing.tax_annual,
     )
 
     with _connect() as conn:
@@ -162,9 +176,10 @@ def _build_where(
     min_beds: int | None = None,
     status: str | None = None,
     is_favorite: bool | None = None,
+    listing_type: str = "rental",
 ) -> tuple[str, list[object]]:
-    clauses: list[str] = []
-    params: list[object] = []
+    clauses: list[str] = ["COALESCE(listing_type, 'rental') = ?"]
+    params: list[object] = [listing_type]
 
     if source:
         clauses.append("source = ?")
@@ -184,7 +199,7 @@ def _build_where(
     if is_favorite is not None and is_favorite:
         clauses.append("is_favorite = 1")
 
-    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    where = f" WHERE {' AND '.join(clauses)}"
     return where, params
 
 
@@ -198,8 +213,9 @@ def get_all_listings(
     sort: str | None = None,
     page: int = 1,
     per_page: int = 24,
+    listing_type: str = "rental",
 ) -> dict:
-    where, params = _build_where(source, min_price, max_price, min_beds, status, is_favorite)
+    where, params = _build_where(source, min_price, max_price, min_beds, status, is_favorite, listing_type=listing_type)
     order_by = _SORT_OPTIONS.get(sort or "date_listed", _SORT_OPTIONS["date_listed"])
 
     with _connect() as conn:
@@ -227,8 +243,9 @@ def get_map_listings(
     min_beds: int | None = None,
     status: str | None = None,
     is_favorite: bool | None = None,
+    listing_type: str = "rental",
 ) -> list[dict]:
-    where, params = _build_where(source, min_price, max_price, min_beds, status, is_favorite)
+    where, params = _build_where(source, min_price, max_price, min_beds, status, is_favorite, listing_type=listing_type)
     coord_clause = "latitude IS NOT NULL AND longitude IS NOT NULL"
     if where:
         where += f" AND {coord_clause}"
@@ -267,15 +284,16 @@ def update_listing(listing_id: int, fields: dict) -> dict | None:
     return get_listing(listing_id)
 
 
-def get_sources() -> list[str]:
+def get_sources(listing_type: str = "rental") -> list[str]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT source FROM listings ORDER BY source"
+            "SELECT DISTINCT source FROM listings WHERE COALESCE(listing_type, 'rental') = ? ORDER BY source",
+            (listing_type,),
         ).fetchall()
         return [row["source"] for row in rows]
 
 
-def get_stats() -> dict:
+def get_stats(listing_type: str = "rental") -> dict:
     with _connect() as conn:
         row = conn.execute(
             """
@@ -286,8 +304,9 @@ def get_stats() -> dict:
                 MIN(price)             AS min_price,
                 MAX(price)             AS max_price
             FROM listings
-            WHERE price IS NOT NULL
-            """
+            WHERE price IS NOT NULL AND COALESCE(listing_type, 'rental') = ?
+            """,
+            (listing_type,),
         ).fetchone()
         return dict(row) if row else {}
 

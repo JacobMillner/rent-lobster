@@ -3,21 +3,25 @@
 import ListingFinder from "@/components/ListingFinder";
 import type { ListingFinderConfig } from "@/types";
 
-const RENTAL_CONFIG: ListingFinderConfig = {
-  listingType: "rental",
+const SALE_CONFIG: ListingFinderConfig = {
+  listingType: "sale",
   title: "Rent Lobster",
-  subtitle: "Apartment Listing Aggregator",
-  priceLabel: "Max rent",
-  showNoFee: true,
-  showHoa: false,
-  appliedLabel: "Mark Applied",
-  appliedActiveLabel: "Application Submitted",
+  subtitle: "Condo & Real Estate Finder",
+  priceLabel: "Max price",
+  showNoFee: false,
+  showHoa: true,
+  appliedLabel: "Mark Offer Made",
+  appliedActiveLabel: "Offer Submitted",
   editableFields: [
     { key: "price", label: "Price", type: "number" },
     { key: "beds", label: "Beds", type: "number" },
     { key: "baths", label: "Baths", type: "number" },
     { key: "sqft", label: "Sq Ft", type: "number" },
     { key: "floor", label: "Floor", type: "text" },
+    { key: "property_type", label: "Property Type", type: "text" },
+    { key: "hoa_fee", label: "HOA / Mo", type: "number" },
+    { key: "tax_annual", label: "Annual Tax", type: "number" },
+    { key: "year_built", label: "Year Built", type: "number" },
     { key: "available_date", label: "Available", type: "text" },
     { key: "address", label: "Address", type: "text" },
     { key: "neighborhood", label: "Neighborhood", type: "text" },
@@ -34,10 +38,9 @@ const RENTAL_CONFIG: ListingFinderConfig = {
     has_elevator: "Elevator",
     has_gym: "Gym",
     pets_allowed: "Pets OK",
-    no_fee: "No Fee",
   },
 };
 
-export default function Home() {
-  return <ListingFinder config={RENTAL_CONFIG} />;
+export default function BuyPage() {
+  return <ListingFinder config={SALE_CONFIG} />;
 }

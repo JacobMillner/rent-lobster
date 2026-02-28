@@ -7,6 +7,7 @@ from pydantic import BaseModel, HttpUrl
 class Listing(BaseModel):
     source: str
     url: HttpUrl
+    listing_type: str = "rental"
     price: int | None = None
     beds: int | None = None
     baths: float | None = None
@@ -33,9 +34,13 @@ class Listing(BaseModel):
     date_listed: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    hoa_fee: int | None = None
+    year_built: int | None = None
+    property_type: str | None = None
+    tax_annual: int | None = None
 
-    def matches(self, *, min_beds: int, min_baths: int, max_rent: int) -> bool:
-        if self.price is not None and self.price > max_rent:
+    def matches(self, *, min_beds: int, min_baths: int, max_price: int) -> bool:
+        if self.price is not None and self.price > max_price:
             return False
         if self.beds is not None and self.beds < min_beds:
             return False
@@ -60,6 +65,17 @@ _AVAIL_RE = re.compile(
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 _PHONE_RE = re.compile(r"\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}")
 _FLOOR_RE = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)\s+floor\b", re.IGNORECASE)
+_HOA_RE = re.compile(r"(?:hoa|maintenance|common charges?)[:\s]*\$?([\d,]+)(?:\s*/\s*mo)?", re.IGNORECASE)
+_YEAR_BUILT_RE = re.compile(r"(?:built|year built|constructed)[:\s]*(\d{4})", re.IGNORECASE)
+_TAX_RE = re.compile(r"(?:annual tax|property tax|taxes?)[:\s]*\$?([\d,]+)(?:\s*/\s*yr)?", re.IGNORECASE)
+_PROPERTY_TYPE_MAP = [
+    ("condo", "condo"),
+    ("co-op", "co-op"),
+    ("coop", "co-op"),
+    ("townhouse", "townhouse"),
+    ("single family", "single_family"),
+    ("multi-family", "multi_family"),
+]
 
 
 def scan_amenities(text: str) -> dict:
@@ -124,5 +140,33 @@ def scan_amenities(text: str) -> dict:
     m = _PHONE_RE.search(text)
     if m:
         result["contact_phone"] = m.group(0)
+
+    m = _HOA_RE.search(text)
+    if m:
+        try:
+            result["hoa_fee"] = int(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    m = _YEAR_BUILT_RE.search(text)
+    if m:
+        try:
+            year = int(m.group(1))
+            if 1800 <= year <= 2100:
+                result["year_built"] = year
+        except ValueError:
+            pass
+
+    m = _TAX_RE.search(text)
+    if m:
+        try:
+            result["tax_annual"] = int(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    for label, value in _PROPERTY_TYPE_MAP:
+        if label in lower:
+            result["property_type"] = value
+            break
 
     return result

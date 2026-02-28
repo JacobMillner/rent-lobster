@@ -65,6 +65,7 @@ def build_craigslist_crawler(
     on_page: Callable[[], None] | None = None,
     on_listing: Callable[[], None] | None = None,
     configuration: object | None = None,
+    listing_type: str = "rental",
 ) -> PlaywrightCrawler:
     kwargs: dict = dict(
         headless=settings.headless,
@@ -246,6 +247,7 @@ def build_craigslist_crawler(
         listing = Listing(
             source="craigslist",
             url=url,
+            listing_type=listing_type,
             price=price,
             beds=beds,
             baths=baths,
@@ -272,9 +274,18 @@ def build_craigslist_crawler(
             date_listed=date_listed,
             latitude=latitude,
             longitude=longitude,
+            hoa_fee=amenities.get("hoa_fee"),
+            year_built=amenities.get("year_built"),
+            property_type=amenities.get("property_type"),
+            tax_annual=amenities.get("tax_annual"),
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()

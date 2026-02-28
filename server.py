@@ -42,6 +42,7 @@ def api_listings(
     sort: str | None = Query(None),
     page: int = Query(1, ge=1),
     per_page: int = Query(24, ge=1, le=100),
+    listing_type: str = Query("rental"),
 ) -> dict:
     return get_all_listings(
         source=source,
@@ -53,6 +54,7 @@ def api_listings(
         sort=sort,
         page=page,
         per_page=per_page,
+        listing_type=listing_type,
     )
 
 
@@ -83,6 +85,7 @@ def api_listings_map(
     min_beds: int | None = Query(None),
     status: str | None = Query(None),
     is_favorite: bool | None = Query(None),
+    listing_type: str = Query("rental"),
 ) -> list[dict]:
     return get_map_listings(
         source=source,
@@ -91,17 +94,18 @@ def api_listings_map(
         min_beds=min_beds,
         status=status,
         is_favorite=is_favorite,
+        listing_type=listing_type,
     )
 
 
 @app.get("/api/sources")
-def api_sources() -> list[str]:
-    return get_sources()
+def api_sources(listing_type: str = Query("rental")) -> list[str]:
+    return get_sources(listing_type=listing_type)
 
 
 @app.get("/api/stats")
-def api_stats() -> dict:
-    return get_stats()
+def api_stats(listing_type: str = Query("rental")) -> dict:
+    return get_stats(listing_type=listing_type)
 
 
 # ---- Crawl control API ----------------------------------------------------
@@ -109,6 +113,7 @@ def api_stats() -> dict:
 class CrawlRequest(BaseModel):
     spiders: list[str]
     max_pages: int = 50
+    listing_type: str = "rental"
 
 
 @app.post("/api/crawl")
@@ -118,7 +123,7 @@ def api_crawl_start(req: CrawlRequest) -> dict:
     if not chosen:
         raise HTTPException(400, "No valid spiders selected")
     try:
-        job = crawl_manager.start(chosen, req.max_pages)
+        job = crawl_manager.start(chosen, req.max_pages, listing_type=req.listing_type)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
     return job.to_dict()
@@ -154,6 +159,16 @@ def api_thumbnail(filename: str) -> FileResponse:
 if STATIC_DIR.is_dir():
     @app.get("/")
     async def index() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/buy")
+    async def buy_page() -> FileResponse:
+        buy_html = STATIC_DIR / "buy.html"
+        buy_index = STATIC_DIR / "buy" / "index.html"
+        if buy_html.exists():
+            return FileResponse(buy_html)
+        if buy_index.exists():
+            return FileResponse(buy_index)
         return FileResponse(STATIC_DIR / "index.html")
 
     next_dir = STATIC_DIR / "_next"

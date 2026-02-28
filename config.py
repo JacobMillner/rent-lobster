@@ -39,9 +39,17 @@ class Settings:
     min_baths: int = _get_int("MIN_BATHS", 1)
     max_rent: int = _get_int("MAX_RENT", 6000)
 
+    sale_min_beds: int = _get_int("SALE_MIN_BEDS", 2)
+    sale_min_baths: int = _get_int("SALE_MIN_BATHS", 1)
+    max_sale_price: int = _get_int("MAX_SALE_PRICE", 1_500_000)
+
     zillow_start_urls: list[str] = tuple(_get_urls("ZILLOW_START_URLS"))  # type: ignore
     streeteasy_start_urls: list[str] = tuple(_get_urls("STREETEASY_START_URLS"))  # type: ignore
     craigslist_start_urls: list[str] = tuple(_get_urls("CRAIGSLIST_START_URLS"))  # type: ignore
+
+    zillow_sale_start_urls: list[str] = tuple(_get_urls("ZILLOW_SALE_START_URLS"))  # type: ignore
+    streeteasy_sale_start_urls: list[str] = tuple(_get_urls("STREETEASY_SALE_START_URLS"))  # type: ignore
+    craigslist_sale_start_urls: list[str] = tuple(_get_urls("CRAIGSLIST_SALE_START_URLS"))  # type: ignore
 
     proxy_urls: list[str] = tuple(_get_urls("PROXY_URLS"))  # type: ignore
 

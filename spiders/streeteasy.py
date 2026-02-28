@@ -23,7 +23,7 @@ _BED_RE = re.compile(r"(\d+)\s*(?:bed|br)\b", re.IGNORECASE)
 _BATH_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:bath|ba)\b", re.IGNORECASE)
 
 # StreetEasy listing URLs: /rental/1234, /building/..., /listing/...
-_SE_LISTING_RE = re.compile(r"streeteasy\.com/(rental|building|listing)/\d+", re.IGNORECASE)
+_SE_LISTING_RE = re.compile(r"streeteasy\.com/(rental|sale|building|listing)/\d+", re.IGNORECASE)
 
 
 def _is_listing_url(url: str) -> bool:
@@ -43,6 +43,7 @@ def build_streeteasy_crawler(
     on_page: Callable[[], None] | None = None,
     on_listing: Callable[[], None] | None = None,
     configuration: object | None = None,
+    listing_type: str = "rental",
 ) -> PlaywrightCrawler:
     kwargs: dict = dict(
         headless=settings.headless,
@@ -106,12 +107,12 @@ def build_streeteasy_crawler(
             return
 
         if _is_search_page(url) or not _is_listing_url(url):
-            await _handle_search_page(page, context, settings, on_listing)
+            await _handle_search_page(page, context, settings, on_listing, listing_type)
             return
 
-        await _handle_detail_page(page, context, url, title, settings, on_listing)
+        await _handle_detail_page(page, context, url, title, settings, on_listing, listing_type)
 
-    async def _handle_search_page(page, context, settings, on_listing):
+    async def _handle_search_page(page, context, settings, on_listing, listing_type):
         log.info("[streeteasy] Processing as search results page")
 
         saved_count = 0
@@ -144,7 +145,7 @@ def build_streeteasy_crawler(
         if json_ld_listings:
             log.info("[streeteasy] Found %d listings in JSON-LD data", len(json_ld_listings))
             for item in json_ld_listings:
-                if _save_json_ld_listing(item, settings, on_listing):
+                if _save_json_ld_listing(item, settings, on_listing, listing_type):
                     saved_count += 1
 
         # ── Strategy 2: Extract listing card data via DOM ──
@@ -177,7 +178,7 @@ def build_streeteasy_crawler(
         if card_data:
             log.info("[streeteasy] Found %d listing cards via DOM", len(card_data))
             for card in card_data:
-                if _save_card_listing(card, settings, on_listing):
+                if _save_card_listing(card, settings, on_listing, listing_type):
                     saved_count += 1
 
         # Pagination — try multiple selectors and also look for page=N links
@@ -204,7 +205,7 @@ def build_streeteasy_crawler(
 
         log.info("[streeteasy] Search page done: %d listings saved directly from this page", saved_count)
 
-    async def _handle_detail_page(page, context, url, title, settings, on_listing):
+    async def _handle_detail_page(page, context, url, title, settings, on_listing, listing_type):
         log.info("[streeteasy] Processing as listing detail page")
 
         page.set_default_timeout(5_000)
@@ -416,6 +417,7 @@ def build_streeteasy_crawler(
         listing = Listing(
             source="streeteasy",
             url=url,
+            listing_type=listing_type,
             price=price,
             beds=beds,
             baths=baths,
@@ -442,9 +444,18 @@ def build_streeteasy_crawler(
             date_listed=date_listed,
             latitude=latitude,
             longitude=longitude,
+            hoa_fee=amenities.get("hoa_fee"),
+            year_built=amenities.get("year_built"),
+            property_type=amenities.get("property_type"),
+            tax_annual=amenities.get("tax_annual"),
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
@@ -459,7 +470,7 @@ def build_streeteasy_crawler(
     return crawler
 
 
-def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable | None) -> bool:
+def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable | None, listing_type: str = "rental") -> bool:
     """Parse a JSON-LD ApartmentComplex/Apartment item and save it."""
     try:
         price = None
@@ -538,6 +549,7 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
         listing = Listing(
             source="streeteasy",
             url=listing_url or "https://streeteasy.com",
+            listing_type=listing_type,
             price=price,
             beds=beds,
             baths=baths,
@@ -559,9 +571,18 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
             date_listed=str(date_listed) if date_listed else None,
             latitude=latitude,
             longitude=longitude,
+            hoa_fee=amenities.get("hoa_fee"),
+            year_built=amenities.get("year_built"),
+            property_type=amenities.get("property_type"),
+            tax_annual=amenities.get("tax_annual"),
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
@@ -572,7 +593,7 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
     return False
 
 
-def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | None) -> bool:
+def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | None, listing_type: str = "rental") -> bool:
     """Parse a listing card extracted from DOM and save it."""
     try:
         url = card.get("url") or ""
@@ -609,6 +630,7 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
         listing = Listing(
             source="streeteasy",
             url=url,
+            listing_type=listing_type,
             price=price,
             beds=beds,
             baths=baths,
@@ -618,7 +640,12 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
             sqft=sqft,
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()

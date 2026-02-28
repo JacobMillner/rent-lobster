@@ -31,7 +31,7 @@ def _is_listing_url(url: str) -> bool:
 
 def _is_search_page(url: str) -> bool:
     path = urlparse(url).path
-    return bool(re.search(r"/(apartments|for-rent|rentals|homes)", path, re.IGNORECASE))
+    return bool(re.search(r"/(apartments|for-rent|for-sale|rentals|homes)", path, re.IGNORECASE))
 
 
 def build_zillow_crawler(
@@ -41,6 +41,7 @@ def build_zillow_crawler(
     on_page: Callable[[], None] | None = None,
     on_listing: Callable[[], None] | None = None,
     configuration: object | None = None,
+    listing_type: str = "rental",
 ) -> PlaywrightCrawler:
     kwargs: dict = dict(
         headless=settings.headless,
@@ -104,12 +105,12 @@ def build_zillow_crawler(
             return
 
         if _is_search_page(url) or not _is_listing_url(url):
-            await _handle_search_page(page, context, settings, on_listing)
+            await _handle_search_page(page, context, settings, on_listing, listing_type)
             return
 
-        await _handle_detail_page(page, context, url, title, settings, on_listing)
+        await _handle_detail_page(page, context, url, title, settings, on_listing, listing_type)
 
-    async def _handle_search_page(page, context, settings, on_listing):
+    async def _handle_search_page(page, context, settings, on_listing, listing_type):
         log.info("[zillow] Processing as search results page")
 
         body_text = (await page.text_content("body")) or ""
@@ -146,7 +147,7 @@ def build_zillow_crawler(
         if json_ld_listings:
             log.info("[zillow] Found %d listings in JSON-LD data", len(json_ld_listings))
             for item in json_ld_listings:
-                if _save_json_ld_listing(item, settings, on_listing):
+                if _save_json_ld_listing(item, settings, on_listing, listing_type):
                     saved_count += 1
 
         # ── Strategy 2: Preloaded data (__NEXT_DATA__, inline scripts) ──
@@ -171,7 +172,7 @@ def build_zillow_crawler(
 
         if preloaded:
             log.info("[zillow] Found preloaded data on page")
-            saved_count += _extract_from_preloaded(preloaded, settings, on_listing)
+            saved_count += _extract_from_preloaded(preloaded, settings, on_listing, listing_type)
         else:
             log.info("[zillow] No preloaded data found")
 
@@ -203,7 +204,7 @@ def build_zillow_crawler(
         if card_data:
             log.info("[zillow] Found %d listing cards via DOM", len(card_data))
             for card in card_data:
-                if _save_card_listing(card, settings, on_listing):
+                if _save_card_listing(card, settings, on_listing, listing_type):
                     saved_count += 1
 
         if not saved_count:
@@ -233,7 +234,7 @@ def build_zillow_crawler(
 
         log.info("[zillow] Search page done: %d listings saved directly from this page", saved_count)
 
-    async def _handle_detail_page(page, context, url, title, settings, on_listing):
+    async def _handle_detail_page(page, context, url, title, settings, on_listing, listing_type):
         log.info("[zillow] Processing as listing detail page")
 
         page.set_default_timeout(5_000)
@@ -413,6 +414,7 @@ def build_zillow_crawler(
         listing = Listing(
             source="zillow",
             url=url,
+            listing_type=listing_type,
             price=price,
             beds=beds,
             baths=baths,
@@ -439,9 +441,18 @@ def build_zillow_crawler(
             date_listed=str(date_listed) if date_listed else None,
             latitude=latitude,
             longitude=longitude,
+            hoa_fee=amenities.get("hoa_fee"),
+            year_built=amenities.get("year_built"),
+            property_type=amenities.get("property_type"),
+            tax_annual=amenities.get("tax_annual"),
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
@@ -456,7 +467,7 @@ def build_zillow_crawler(
     return crawler
 
 
-def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable | None) -> bool:
+def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable | None, listing_type: str = "rental") -> bool:
     """Parse a JSON-LD listing item and save it."""
     try:
         price = None
@@ -534,6 +545,7 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
         listing = Listing(
             source="zillow",
             url=listing_url,
+            listing_type=listing_type,
             price=price,
             beds=beds,
             baths=baths,
@@ -555,9 +567,18 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
             date_listed=str(date_listed) if date_listed else None,
             latitude=latitude,
             longitude=longitude,
+            hoa_fee=amenities.get("hoa_fee"),
+            year_built=amenities.get("year_built"),
+            property_type=amenities.get("property_type"),
+            tax_annual=amenities.get("tax_annual"),
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
@@ -568,7 +589,7 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
     return False
 
 
-def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | None) -> bool:
+def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | None, listing_type: str = "rental") -> bool:
     """Parse a listing card extracted from DOM and save it."""
     try:
         url = card.get("url") or ""
@@ -605,6 +626,7 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
         listing = Listing(
             source="zillow",
             url=url,
+            listing_type=listing_type,
             price=price,
             beds=beds,
             baths=baths,
@@ -613,7 +635,12 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
             sqft=sqft,
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
@@ -624,7 +651,7 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
     return False
 
 
-def _extract_from_preloaded(data: dict, settings: Settings, on_listing: Callable | None) -> int:
+def _extract_from_preloaded(data: dict, settings: Settings, on_listing: Callable | None, listing_type: str = "rental") -> int:
     """Extract listings from __NEXT_DATA__ or window state. Returns count saved."""
     saved = 0
     try:
@@ -655,14 +682,14 @@ def _extract_from_preloaded(data: dict, settings: Settings, on_listing: Callable
             log.info("[zillow] Found %d listings in preloaded data", len(results))
             for item in results:
                 if isinstance(item, dict):
-                    if _process_preloaded_item(item, settings, on_listing):
+                    if _process_preloaded_item(item, settings, on_listing, listing_type):
                         saved += 1
     except Exception:
         log.debug("Failed to extract from preloaded data", exc_info=True)
     return saved
 
 
-def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable | None) -> bool:
+def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable | None, listing_type: str = "rental") -> bool:
     """Process a single Zillow listing item from preloaded data."""
     try:
         home_info = item.get("hdpData", {}).get("homeInfo", {})
@@ -725,6 +752,7 @@ def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable
         listing = Listing(
             source="zillow",
             url=detail_url or "https://www.zillow.com",
+            listing_type=listing_type,
             price=int(price) if price else None,
             beds=int(beds) if beds else None,
             baths=float(baths) if baths else None,
@@ -737,7 +765,12 @@ def _process_preloaded_item(item: dict, settings: Settings, on_listing: Callable
             longitude=longitude,
         )
 
-        if listing.matches(min_beds=settings.min_beds, min_baths=settings.min_baths, max_rent=settings.max_rent):
+        is_sale = listing_type == "sale"
+        if listing.matches(
+            min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
+            min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
+            max_price=settings.max_sale_price if is_sale else settings.max_rent,
+        ):
             upsert_listing(listing)
             if on_listing:
                 on_listing()
