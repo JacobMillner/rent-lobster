@@ -357,15 +357,72 @@ def build_zillow_crawler(
             address = title.split("|")[0].strip() if title else None
 
         try:
-            gallery_imgs = await page.eval_on_selector_all(
-                '[class*="media-stream"] img[src], [class*="MediaStream"] img[src], '
-                '[data-testid*="photo"] img[src], [class*="carousel"] img[src], '
-                '[class*="gallery"] img[src]',
-                "els => els.map(e => e.src).filter(Boolean)",
-            )
+            gallery_imgs = await page.evaluate("""() => {
+                const MIN_SIZE = 200;
+                const imgs = document.querySelectorAll(
+                    '[class*="media-stream"] img, [class*="MediaStream"] img, ' +
+                    '[data-testid*="photo"] img, [class*="carousel"] img, ' +
+                    '[class*="gallery"] img'
+                );
+                const results = [];
+                for (const img of imgs) {
+                    let bestUrl = null;
+                    if (img.srcset) {
+                        const candidates = img.srcset.split(',').map(s => {
+                            const parts = s.trim().split(/\s+/);
+                            return { url: parts[0], w: parseInt(parts[1]) || 0 };
+                        }).sort((a, b) => b.w - a.w);
+                        if (candidates.length && candidates[0].url) bestUrl = candidates[0].url;
+                    }
+                    if (!bestUrl) {
+                        bestUrl = img.dataset.src || img.dataset.original
+                            || img.dataset.fullSrc || img.dataset.largeSrc;
+                    }
+                    if (!bestUrl) {
+                        const a = img.closest('a');
+                        if (a && /\\.(jpe?g|png|gif|webp)/i.test(a.href)) bestUrl = a.href;
+                    }
+                    if (!bestUrl && img.src) {
+                        if (img.naturalWidth >= MIN_SIZE && img.naturalHeight >= MIN_SIZE) {
+                            bestUrl = img.src;
+                        }
+                    }
+                    if (bestUrl && !results.includes(bestUrl)) results.push(bestUrl);
+                }
+                return results;
+            }""")
             for gi in (gallery_imgs or []):
                 if gi not in all_image_urls:
                     all_image_urls.append(gi)
+        except Exception:
+            pass
+
+        # Click thumbnail images to try loading full-size versions
+        try:
+            thumb_els = await page.query_selector_all(
+                '[class*="media-stream"] img, [class*="MediaStream"] img, '
+                '[data-testid*="photo"] img, [class*="carousel"] img, '
+                '[class*="gallery"] img'
+            )
+            for thumb in thumb_els:
+                try:
+                    box = await thumb.bounding_box()
+                    if not box or box["width"] < 200 or box["height"] < 200:
+                        await thumb.click(timeout=2000)
+                        await page.wait_for_timeout(800)
+                        expanded = await page.evaluate("""() => {
+                            const big = document.querySelector(
+                                '[class*="lightbox"] img[src], [class*="Lightbox"] img[src], ' +
+                                '[class*="modal"] img[src], [class*="Modal"] img[src], ' +
+                                '[class*="fullscreen"] img[src], [class*="viewer"] img[src], ' +
+                                '[class*="Viewer"] img[src], [class*="enlarged"] img[src]'
+                            );
+                            return big ? big.src : null;
+                        }""")
+                        if expanded and expanded not in all_image_urls:
+                            all_image_urls.append(expanded)
+                except Exception:
+                    continue
         except Exception:
             pass
 

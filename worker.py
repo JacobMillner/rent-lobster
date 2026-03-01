@@ -11,8 +11,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from PIL import Image
 
 from db import get_images_needing_download, get_listings_needing_geocoding, get_listings_needing_thumbnails, mark_geocode_failed, update_coordinates, update_image_path, update_thumbnail_path
+
+MIN_IMAGE_DIMENSION = 200
 
 log = logging.getLogger(__name__)
 
@@ -114,9 +117,21 @@ class CrawlManager:
             job.current_spider = None
 
     @staticmethod
-    def _purge_storage() -> None:
-        if STORAGE_DIR.exists():
-            shutil.rmtree(STORAGE_DIR, ignore_errors=True)
+    def _purge_spider_storage(spider_name: str) -> None:
+        spider_dir = STORAGE_DIR / spider_name
+        for attempt in range(5):
+            if not spider_dir.exists():
+                break
+            try:
+                shutil.rmtree(spider_dir)
+                break
+            except OSError:
+                if attempt < 4:
+                    import time
+                    time.sleep(0.2 * (attempt + 1))
+                else:
+                    log.warning("Could not fully remove %s, continuing anyway", spider_dir)
+        spider_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _spider_config(spider_name: str) -> "CrawleeConfiguration":
@@ -130,12 +145,12 @@ class CrawlManager:
         from crawlee import Request as CrawleeRequest
         from config import Settings
 
-        self._purge_storage()
         settings = Settings()
         is_sale = job.listing_type == "sale"
 
         for spider_name in job.spiders:
             job.current_spider = spider_name
+            self._purge_spider_storage(spider_name)
             config = self._spider_config(spider_name)
             log.info("[worker] Starting spider %s (listing_type=%s)", spider_name, job.listing_type)
 
@@ -251,6 +266,15 @@ class ThumbnailWorker:
                 resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
                 resp.raise_for_status()
                 dest.write_bytes(resp.content)
+                try:
+                    with Image.open(dest) as img:
+                        w, h = img.size
+                    if w < MIN_IMAGE_DIMENSION or h < MIN_IMAGE_DIMENSION:
+                        log.debug("Thumbnail too small (%dx%d) for listing %s — discarding", w, h, listing_id)
+                        dest.unlink(missing_ok=True)
+                        return
+                except Exception:
+                    pass
                 update_thumbnail_path(listing_id, dest.name)
         except Exception:
             log.debug("Failed to download thumbnail for listing %s", listing_id)
@@ -307,6 +331,16 @@ class ImageWorker:
                 resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
                 resp.raise_for_status()
                 dest.write_bytes(resp.content)
+                try:
+                    with Image.open(dest) as img:
+                        w, h = img.size
+                    if w < MIN_IMAGE_DIMENSION or h < MIN_IMAGE_DIMENSION:
+                        log.debug("Image too small (%dx%d) for listing %s pos %d — discarding",
+                                  w, h, listing_id, position)
+                        dest.unlink(missing_ok=True)
+                        return
+                except Exception:
+                    pass
                 update_image_path(image_id, filename)
         except Exception:
             log.debug("Failed to download image %s for listing %s", image_id, listing_id)

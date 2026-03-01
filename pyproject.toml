@@ -11,6 +11,8 @@ dependencies = [
   "browserforge",
   "fastapi",
   "uvicorn[standard]",
+  "proxy-py",
+  "pillow",
 ]
 
 [project.optional-dependencies]

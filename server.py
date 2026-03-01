@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -8,8 +10,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from config import _get_int
 from db import get_all_listings, get_listing, get_listing_images, get_map_listings, get_sources, get_stats, init_db, update_listing
+from proxy_manager import proxy_manager
 from worker import IMAGES_DIR, THUMBNAIL_DIR, crawl_manager, geocoding_worker, image_worker, thumbnail_worker
+
+log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "frontend" / "out"
 
@@ -18,6 +24,15 @@ app = FastAPI(title="Rent Lobster")
 
 @app.on_event("startup")
 def startup() -> None:
+    proxy_count = _get_int("PROXY_COUNT", 5)
+    manual_urls = os.getenv("PROXY_URLS", "").strip()
+    if not manual_urls and proxy_count > 0:
+        urls = proxy_manager.start(proxy_count)
+        if urls:
+            log.info("Auto-started %d proxies: %s", len(urls), urls)
+    elif manual_urls:
+        log.info("Using manually configured PROXY_URLS")
+
     init_db()
     thumbnail_worker.start()
     image_worker.start()
@@ -29,6 +44,7 @@ def shutdown() -> None:
     thumbnail_worker.stop()
     image_worker.stop()
     geocoding_worker.stop()
+    proxy_manager.stop()
 
 
 # ---- Listings API ---------------------------------------------------------

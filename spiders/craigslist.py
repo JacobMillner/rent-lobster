@@ -171,21 +171,29 @@ def build_craigslist_crawler(
 
         all_image_urls: list[str] = []
 
-        imgs = await context.page.eval_on_selector_all(
-            'img[src*="images.craigslist.org"]',
-            "els => els.map(e => e.src).filter(Boolean)",
-        )
-        if imgs:
-            all_image_urls = list(dict.fromkeys(imgs))
-
+        # Prefer full-size links from thumbnail anchors over inline img src
         thumb_links = await context.page.eval_on_selector_all(
             '#thumbs a[href*="images.craigslist.org"]',
             "els => els.map(e => e.href).filter(Boolean)",
         )
         if thumb_links:
-            for tl in thumb_links:
-                if tl not in all_image_urls:
-                    all_image_urls.append(tl)
+            all_image_urls = list(dict.fromkeys(thumb_links))
+
+        # Also grab inline images, but only if they're reasonably large
+        imgs = await context.page.evaluate("""() => {
+            const MIN_SIZE = 200;
+            const results = [];
+            for (const img of document.querySelectorAll('img[src*="images.craigslist.org"]')) {
+                if (img.naturalWidth >= MIN_SIZE && img.naturalHeight >= MIN_SIZE) {
+                    results.push(img.src);
+                }
+            }
+            return results;
+        }""")
+        if imgs:
+            for src in imgs:
+                if src not in all_image_urls:
+                    all_image_urls.append(src)
 
         thumbnail = await context.page.get_attribute('meta[property="og:image"]', "content")
         if not thumbnail and all_image_urls:

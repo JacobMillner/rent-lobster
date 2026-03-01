@@ -151,26 +151,27 @@ def build_streeteasy_crawler(
         # ── Strategy 2: Extract listing card data via DOM ──
         card_data = await page.evaluate("""() => {
             const cards = document.querySelectorAll(
-                '[data-testid*="listing"], [class*="listingCard"], [class*="SearchCard"], article[class*="listing"]'
+                '[data-testid="listing-card"], [data-testid*="listing"], [class*="ListingCard"], [class*="listingCard"], [class*="SearchCard"], article[class*="listing"]'
             );
             return Array.from(cards).map(card => {
-                const link = card.querySelector('a[href]');
-                const priceEl = card.querySelector('[class*="price"], [data-testid*="price"]');
-                const addrEl = card.querySelector('[class*="address"], [data-testid*="address"]');
-                const bedsEl = card.querySelector('[class*="bed"], [data-testid*="bed"]');
-                const bathsEl = card.querySelector('[class*="bath"], [data-testid*="bath"]');
+                const link = card.querySelector('a[href*="streeteasy.com"]') || card.querySelector('a[href^="/"]') || card.querySelector('a[href]');
+                const priceEl = card.querySelector('[class*="price" i], [class*="Price"], [data-testid*="price"]');
+                const addrEl = card.querySelector('[class*="address" i], [class*="Address"], [data-testid*="address"]');
+                const titleEl = card.querySelector('[class*="title" i], [class*="Title"]');
+                const bedsEl = card.querySelector('[class*="bed" i], [class*="Bed"], [data-testid*="bed"]');
+                const bathsEl = card.querySelector('[class*="bath" i], [class*="Bath"], [data-testid*="bath"]');
                 const imgEl = card.querySelector('img[src]');
-                const neighEl = card.querySelector('[class*="neighborhood"], [class*="area"], [class*="location"]');
-                const detailsEl = card.querySelector('[class*="details"], [class*="info"]');
+                const neighEl = card.querySelector('[class*="neighborhood" i], [class*="area" i], [class*="location" i]');
+                const detailsText = card.textContent || '';
                 return {
                     url: link ? link.href : null,
                     price: priceEl ? priceEl.textContent : null,
-                    address: addrEl ? addrEl.textContent : null,
+                    address: addrEl ? addrEl.textContent : (titleEl ? titleEl.textContent : null),
                     beds: bedsEl ? bedsEl.textContent : null,
                     baths: bathsEl ? bathsEl.textContent : null,
                     image: imgEl ? imgEl.src : null,
                     neighborhood: neighEl ? neighEl.textContent : null,
-                    details: detailsEl ? detailsEl.textContent : null,
+                    details: detailsText,
                 };
             });
         }""")
@@ -181,7 +182,8 @@ def build_streeteasy_crawler(
                 if _save_card_listing(card, settings, on_listing, listing_type):
                     saved_count += 1
 
-        # Pagination — try multiple selectors and also look for page=N links
+        # Pagination — try specific selectors, then fall back to generic page links
+        found_next = False
         for sel in [
             'a[aria-label="Next"]',
             'a[aria-label="next"]',
@@ -189,6 +191,8 @@ def build_streeteasy_crawler(
             '[data-testid="pagination-next"]',
             '[data-testid*="next"] a',
             'a[rel="next"]',
+            '[class*="Pagination"] a[href*="page="]',
+            '[class*="pagination"] a[href*="page="]',
             'nav a[href*="page="]',
             '.pagination a:last-child',
         ]:
@@ -199,9 +203,36 @@ def build_streeteasy_crawler(
                 if next_links:
                     log.info("[streeteasy] Pagination via %r: %s", sel, next_links[0])
                     await context.add_requests([next_links[0]])
+                    found_next = True
                     break
             except Exception:
                 continue
+
+        if not found_next:
+            try:
+                page_links = await page.eval_on_selector_all(
+                    '[class*="Pagination"] a[href], nav[class*="pagination" i] a[href]',
+                    """els => {
+                        const seen = new Set();
+                        return els.map(e => e.href).filter(h => {
+                            if (!h || seen.has(h)) return false;
+                            seen.add(h);
+                            return h.includes('page=');
+                        });
+                    }""",
+                )
+                if page_links:
+                    current_url = page.url
+                    cur_match = re.search(r'page=(\d+)', str(current_url))
+                    cur_page = int(cur_match.group(1)) if cur_match else 1
+                    for link in page_links:
+                        link_match = re.search(r'page=(\d+)', link)
+                        if link_match and int(link_match.group(1)) == cur_page + 1:
+                            log.info("[streeteasy] Pagination fallback: %s", link)
+                            await context.add_requests([link])
+                            break
+            except Exception:
+                pass
 
         log.info("[streeteasy] Search page done: %d listings saved directly from this page", saved_count)
 
@@ -325,15 +356,72 @@ def build_streeteasy_crawler(
             address = title.split("|")[0].strip() if title else None
 
         try:
-            gallery_imgs = await page.eval_on_selector_all(
-                '[class*="carousel"] img[src], [class*="gallery"] img[src], '
-                '[class*="Carousel"] img[src], [class*="Gallery"] img[src], '
-                '[data-testid*="photo"] img[src]',
-                "els => els.map(e => e.src).filter(Boolean)",
-            )
+            gallery_imgs = await page.evaluate("""() => {
+                const MIN_SIZE = 200;
+                const imgs = document.querySelectorAll(
+                    '[class*="carousel"] img, [class*="gallery"] img, ' +
+                    '[class*="Carousel"] img, [class*="Gallery"] img, ' +
+                    '[data-testid*="photo"] img'
+                );
+                const results = [];
+                for (const img of imgs) {
+                    let bestUrl = null;
+                    if (img.srcset) {
+                        const candidates = img.srcset.split(',').map(s => {
+                            const parts = s.trim().split(/\s+/);
+                            return { url: parts[0], w: parseInt(parts[1]) || 0 };
+                        }).sort((a, b) => b.w - a.w);
+                        if (candidates.length && candidates[0].url) bestUrl = candidates[0].url;
+                    }
+                    if (!bestUrl) {
+                        bestUrl = img.dataset.src || img.dataset.original
+                            || img.dataset.fullSrc || img.dataset.largeSrc;
+                    }
+                    if (!bestUrl) {
+                        const a = img.closest('a');
+                        if (a && /\\.(jpe?g|png|gif|webp)/i.test(a.href)) bestUrl = a.href;
+                    }
+                    if (!bestUrl && img.src) {
+                        if (img.naturalWidth >= MIN_SIZE && img.naturalHeight >= MIN_SIZE) {
+                            bestUrl = img.src;
+                        }
+                    }
+                    if (bestUrl && !results.includes(bestUrl)) results.push(bestUrl);
+                }
+                return results;
+            }""")
             for gi in (gallery_imgs or []):
                 if gi not in all_image_urls:
                     all_image_urls.append(gi)
+        except Exception:
+            pass
+
+        # Click thumbnail images to try loading full-size versions
+        try:
+            thumb_els = await page.query_selector_all(
+                '[class*="carousel"] img, [class*="gallery"] img, '
+                '[class*="Carousel"] img, [class*="Gallery"] img, '
+                '[data-testid*="photo"] img'
+            )
+            for thumb in thumb_els:
+                try:
+                    box = await thumb.bounding_box()
+                    if not box or box["width"] < 200 or box["height"] < 200:
+                        await thumb.click(timeout=2000)
+                        await page.wait_for_timeout(800)
+                        expanded = await page.evaluate("""() => {
+                            const big = document.querySelector(
+                                '[class*="lightbox"] img[src], [class*="Lightbox"] img[src], ' +
+                                '[class*="modal"] img[src], [class*="Modal"] img[src], ' +
+                                '[class*="fullscreen"] img[src], [class*="viewer"] img[src], ' +
+                                '[class*="Viewer"] img[src], [class*="enlarged"] img[src]'
+                            );
+                            return big ? big.src : null;
+                        }""")
+                        if expanded and expanded not in all_image_urls:
+                            all_image_urls.append(expanded)
+                except Exception:
+                    continue
         except Exception:
             pass
 
@@ -640,32 +728,40 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
         if not url:
             return False
 
+        full_text = card.get("details") or ""
+
         price = None
-        price_text = card.get("price") or ""
+        price_text = card.get("price") or full_text
         m = _PRICE_RE.search(price_text)
         if m:
             price = int(m.group(1).replace(",", ""))
 
         beds = None
-        beds_text = card.get("beds") or ""
+        beds_text = card.get("beds") or full_text
         m_bed = _BED_RE.search(beds_text)
         if m_bed:
             beds = int(m_bed.group(1))
 
         baths = None
-        baths_text = card.get("baths") or ""
+        baths_text = card.get("baths") or full_text
         m_bath = _BATH_RE.search(baths_text)
         if m_bath:
             baths = float(m_bath.group(1))
 
         sqft = None
-        sqft_text = card.get("sqft") or card.get("details") or ""
+        sqft_text = card.get("sqft") or full_text
         m_sqft = _SQFT_RE.search(sqft_text)
         if m_sqft:
             try:
                 sqft = int(m_sqft.group(1).replace(",", ""))
             except ValueError:
                 pass
+
+        neighborhood = card.get("neighborhood")
+        if not neighborhood and full_text:
+            m_neigh = re.search(r"(?:Rental\s+unit|For\s+sale|Condo|Co-op|House)\s+in\s+(.+?)(?:\s*$|\s*\d)", full_text, re.IGNORECASE)
+            if m_neigh:
+                neighborhood = m_neigh.group(1).strip()
 
         listing = Listing(
             source="streeteasy",
@@ -675,7 +771,7 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
             beds=beds,
             baths=baths,
             address=card.get("address"),
-            neighborhood=card.get("neighborhood"),
+            neighborhood=neighborhood,
             thumbnail_url=card.get("image"),
             sqft=sqft,
         )

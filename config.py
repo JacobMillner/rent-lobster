@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -51,6 +51,7 @@ class Settings:
     streeteasy_sale_start_urls: list[str] = tuple(_get_urls("STREETEASY_SALE_START_URLS"))  # type: ignore
     craigslist_sale_start_urls: list[str] = tuple(_get_urls("CRAIGSLIST_SALE_START_URLS"))  # type: ignore
 
-    proxy_urls: list[str] = tuple(_get_urls("PROXY_URLS"))  # type: ignore
+    proxy_count: int = _get_int("PROXY_COUNT", 5)
+    proxy_urls: list[str] = field(default_factory=lambda: tuple(_get_urls("PROXY_URLS")))  # type: ignore
 
     discord_webhook_url: str = _get_str("DISCORD_WEBHOOK_URL")
