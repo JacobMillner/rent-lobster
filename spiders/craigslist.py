@@ -9,10 +9,7 @@ from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 from config import Settings
 from db import upsert_listing
 from models import Listing, scan_amenities, _SQFT_RE
-
-_PRICE_RE = re.compile(r"\$([\d,]+)")
-_BED_RE = re.compile(r"(\d+(?:\.\d+)?)\s*br\b", re.IGNORECASE)
-_BATH_RE = re.compile(r"(\d+(?:\.\d+)?)\s*ba\b", re.IGNORECASE)
+from spiders._common import parse_beds_baths, parse_int_price
 
 _LISTING_RE = re.compile(r"/\d+\.html$")
 
@@ -28,34 +25,6 @@ def _same_site(url: str, seed_host: str) -> bool:
 def _looks_like_listing_url(url: str) -> bool:
     """True for URLs like /brk/apa/d/some-title/7890123456.html"""
     return bool(_LISTING_RE.search(urlparse(url).path))
-
-
-def _parse_int_price(text: str) -> int | None:
-    m = _PRICE_RE.search(text)
-    if not m:
-        return None
-    return int(m.group(1).replace(",", ""))
-
-
-def _parse_beds_baths(text: str) -> tuple[int | None, float | None]:
-    beds = None
-    baths = None
-
-    m_bed = _BED_RE.search(text)
-    if m_bed:
-        try:
-            beds = int(float(m_bed.group(1)))
-        except Exception:
-            pass
-
-    m_bath = _BATH_RE.search(text)
-    if m_bath:
-        try:
-            baths = float(m_bath.group(1))
-        except Exception:
-            pass
-
-    return beds, baths
 
 
 def build_craigslist_crawler(
@@ -152,10 +121,10 @@ def build_craigslist_crawler(
         # --- LISTING PAGE ---
         title = (await context.page.text_content("span#titletextonly")) or (await context.page.title()) or ""
         price_text = (await context.page.text_content("span.price")) or ""
-        price = _parse_int_price(price_text) or _parse_int_price(title)
+        price = parse_int_price(price_text) or parse_int_price(title)
 
         housing = (await context.page.text_content("span.housing")) or ""
-        beds, baths = _parse_beds_baths(housing)
+        beds, baths = parse_beds_baths(housing)
 
         sqft = None
         m_sqft = _SQFT_RE.search(housing)

@@ -23,6 +23,19 @@ THUMBNAIL_DIR = Path(__file__).resolve().parent / "thumbnails"
 IMAGES_DIR = Path(__file__).resolve().parent / "images"
 STORAGE_DIR = Path(__file__).resolve().parent / "storage"
 
+# A bare "Mozilla/5.0" gets rejected by a number of listing-image CDNs
+# (StreetEasy and Zillow image hosts in particular). Send a realistic modern
+# Chrome UA plus image-friendly Accept headers so the image worker hits a
+# similar success rate to a real browser tab.
+_IMAGE_DOWNLOAD_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 
 # ---------------------------------------------------------------------------
 # Crawl job state
@@ -263,7 +276,7 @@ class ThumbnailWorker:
             return
         try:
             with httpx.Client(timeout=15, follow_redirects=True) as client:
-                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp = client.get(url, headers=_IMAGE_DOWNLOAD_HEADERS)
                 resp.raise_for_status()
                 dest.write_bytes(resp.content)
                 try:
@@ -328,7 +341,7 @@ class ImageWorker:
             return
         try:
             with httpx.Client(timeout=15, follow_redirects=True) as client:
-                resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                resp = client.get(url, headers=_IMAGE_DOWNLOAD_HEADERS)
                 resp.raise_for_status()
                 dest.write_bytes(resp.content)
                 try:
@@ -378,7 +391,10 @@ class GeocodingWorker:
                 for row in rows:
                     if self._stop.is_set():
                         break
-                    self._geocode_one(row)
+                    if self._geocode_one(row) == "rate_limited":
+                        log.warning("[geocoding] Nominatim returned 429 — backing off 60s")
+                        self._stop.wait(60)
+                        break
                     # Nominatim requires max 1 request/second
                     self._stop.wait(1.1)
             except Exception:
@@ -386,7 +402,13 @@ class GeocodingWorker:
                 self._stop.wait(15)
 
     @staticmethod
-    def _geocode_one(row: dict) -> None:
+    def _geocode_one(row: dict) -> str | None:
+        """Geocode a single row.
+
+        Returns ``"rate_limited"`` so the outer loop can apply a longer back-off
+        without marking this listing as permanently failed. Returns ``None`` on
+        success or any other terminal outcome.
+        """
         listing_id = row["id"]
         query = row["address"] or ""
         if row.get("neighborhood"):
@@ -394,7 +416,7 @@ class GeocodingWorker:
         query = query.strip(", ")
         if not query:
             mark_geocode_failed(listing_id, "no_address")
-            return
+            return None
         try:
             with httpx.Client(timeout=10) as client:
                 resp = client.get(
@@ -402,6 +424,9 @@ class GeocodingWorker:
                     params={"q": query, "format": "json", "limit": 1},
                     headers={"User-Agent": "RentLobster/1.0 (apartment search tool)"},
                 )
+                if resp.status_code == 429:
+                    # Leave geocode_status alone (still 'pending') so we retry later.
+                    return "rate_limited"
                 resp.raise_for_status()
                 results = resp.json()
                 if results and isinstance(results, list) and len(results) > 0:
@@ -412,9 +437,15 @@ class GeocodingWorker:
                 else:
                     mark_geocode_failed(listing_id, "no_result")
                     log.info("[geocoding] No results for listing %s: %s", listing_id, query)
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 429:
+                return "rate_limited"
+            mark_geocode_failed(listing_id, "error")
+            log.debug("Failed to geocode listing %s: %s", listing_id, query, exc_info=True)
         except Exception:
             mark_geocode_failed(listing_id, "error")
             log.debug("Failed to geocode listing %s: %s", listing_id, query, exc_info=True)
+        return None
 
 
 # Module-level singletons

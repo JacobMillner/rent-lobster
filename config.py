@@ -20,6 +20,10 @@ def _get_str(name: str, default: str = "") -> str:
     raw = os.getenv(name)
     return default if raw is None else raw
 
+def _get_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    return default if raw is None else float(raw)
+
 def _get_urls(name: str) -> list[str]:
     raw = os.getenv(name, "").strip()
     if not raw:
@@ -53,5 +57,10 @@ class Settings:
 
     proxy_count: int = _get_int("PROXY_COUNT", 5)
     proxy_urls: list[str] = field(default_factory=lambda: tuple(_get_urls("PROXY_URLS")))  # type: ignore
+
+    # Randomized per-page delay used by spiders that need to look human. Set both to
+    # 0 in tests/local runs where speed matters more than evasion.
+    spider_min_delay: float = _get_float("SPIDER_MIN_DELAY", 3.0)
+    spider_max_delay: float = _get_float("SPIDER_MAX_DELAY", 8.0)
 
     discord_webhook_url: str = _get_str("DISCORD_WEBHOOK_URL")

@@ -27,6 +27,7 @@ export default function RootLayout({
         >
           <a href="/" style={navLink}>Rentals</a>
           <a href="/buy" style={navLink}>Buy</a>
+          <a href="/trends" style={navLink}>Trends</a>
         </nav>
         {children}
       </body>

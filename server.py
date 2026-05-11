@@ -11,7 +11,25 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import _get_int
-from db import get_all_listings, get_listing, get_listing_images, get_map_listings, get_sources, get_stats, init_db, update_listing
+from db import (
+    create_saved_search,
+    delete_saved_search,
+    get_all_listings,
+    get_listing,
+    get_listing_images,
+    get_map_listings,
+    get_price_drops,
+    get_sources,
+    get_stats,
+    get_trend_listing_volume,
+    get_trend_neighborhoods,
+    get_trend_price_history,
+    get_trend_summary,
+    init_db,
+    list_saved_searches,
+    touch_saved_search,
+    update_listing,
+)
 from proxy_manager import proxy_manager
 from worker import IMAGES_DIR, THUMBNAIL_DIR, crawl_manager, geocoding_worker, image_worker, thumbnail_worker
 
@@ -188,6 +206,85 @@ def api_image(filename: str) -> FileResponse:
     return FileResponse(path, media_type=media)
 
 
+# ---- Saved searches API ---------------------------------------------------
+
+class SavedSearchCreate(BaseModel):
+    name: str
+    listing_type: str = "rental"
+    filters: dict[str, Any] = {}
+
+
+@app.get("/api/saved-searches")
+def api_saved_searches_list(listing_type: str = Query("rental")) -> list[dict]:
+    return list_saved_searches(listing_type=listing_type)
+
+
+@app.post("/api/saved-searches")
+def api_saved_search_create(body: SavedSearchCreate) -> dict:
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Name is required")
+    return create_saved_search(name=name, listing_type=body.listing_type, filters=body.filters)
+
+
+@app.delete("/api/saved-searches/{saved_search_id}")
+def api_saved_search_delete(saved_search_id: int) -> dict:
+    ok = delete_saved_search(saved_search_id)
+    if not ok:
+        raise HTTPException(404, "Saved search not found")
+    return {"ok": True}
+
+
+@app.post("/api/saved-searches/{saved_search_id}/use")
+def api_saved_search_touch(saved_search_id: int) -> dict:
+    row = touch_saved_search(saved_search_id)
+    if row is None:
+        raise HTTPException(404, "Saved search not found")
+    return row
+
+
+# ---- Trends API -----------------------------------------------------------
+
+@app.get("/api/trends/summary")
+def api_trends_summary(listing_type: str = Query("sale")) -> dict:
+    return get_trend_summary(listing_type=listing_type)
+
+
+@app.get("/api/trends/neighborhoods")
+def api_trends_neighborhoods(
+    listing_type: str = Query("sale"),
+    limit: int = Query(50, ge=1, le=200),
+) -> list[dict]:
+    return get_trend_neighborhoods(listing_type=listing_type, limit=limit)
+
+
+@app.get("/api/trends/price-history")
+def api_trends_price_history(
+    listing_type: str = Query("sale"),
+    weeks: int = Query(12, ge=1, le=104),
+    neighborhood: str | None = Query(None),
+) -> list[dict]:
+    return get_trend_price_history(
+        listing_type=listing_type, weeks=weeks, neighborhood=neighborhood,
+    )
+
+
+@app.get("/api/trends/listing-volume")
+def api_trends_listing_volume(
+    listing_type: str = Query("sale"),
+    weeks: int = Query(12, ge=1, le=104),
+) -> list[dict]:
+    return get_trend_listing_volume(listing_type=listing_type, weeks=weeks)
+
+
+@app.get("/api/trends/price-drops")
+def api_trends_price_drops(
+    listing_type: str = Query("sale"),
+    limit: int = Query(20, ge=1, le=100),
+) -> list[dict]:
+    return get_price_drops(listing_type=listing_type, limit=limit)
+
+
 # ---- Static frontend (must be registered last) ----------------------------
 
 if STATIC_DIR.is_dir():
@@ -203,6 +300,16 @@ if STATIC_DIR.is_dir():
             return FileResponse(buy_html)
         if buy_index.exists():
             return FileResponse(buy_index)
+        return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/trends")
+    async def trends_page() -> FileResponse:
+        trends_html = STATIC_DIR / "trends.html"
+        trends_index = STATIC_DIR / "trends" / "index.html"
+        if trends_html.exists():
+            return FileResponse(trends_html)
+        if trends_index.exists():
+            return FileResponse(trends_index)
         return FileResponse(STATIC_DIR / "index.html")
 
     next_dir = STATIC_DIR / "_next"

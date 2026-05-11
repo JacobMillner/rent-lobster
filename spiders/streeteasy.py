@@ -14,10 +14,13 @@ from crawlee.proxy_configuration import ProxyConfiguration
 from config import Settings
 from db import upsert_listing
 from models import Listing, scan_amenities, _SQFT_RE
+from spiders._common import is_blocked_title
 from spiders._stealth import inject_stealth, stealth_context_options
 
 log = logging.getLogger(__name__)
 
+# These two regexes are still re-used by this file's own helpers below, so we keep
+# them local. New shared parsing should use spiders._common.
 _PRICE_RE = re.compile(r"\$([\d,]+)")
 _BED_RE = re.compile(r"(\d+)\s*(?:bed|br)\b", re.IGNORECASE)
 _BATH_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:bath|ba)\b", re.IGNORECASE)
@@ -81,8 +84,10 @@ def build_streeteasy_crawler(
 
         page = context.page
 
-        delay = random.uniform(3.0, 8.0)
-        await asyncio.sleep(delay)
+        if settings.spider_max_delay > 0:
+            lo = max(0.0, settings.spider_min_delay)
+            hi = max(lo, settings.spider_max_delay)
+            await asyncio.sleep(random.uniform(lo, hi))
 
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=15_000)
@@ -99,10 +104,7 @@ def build_streeteasy_crawler(
         log.info("[streeteasy] Page loaded: title=%r, status=%s", title, status)
 
         # Detect block pages — skip immediately instead of wasting time
-        blocked = any(kw in title.lower() for kw in (
-            "access denied", "blocked", "captcha", "just a moment", "denied",
-        ))
-        if blocked:
+        if is_blocked_title(title):
             log.warning("[streeteasy] Blocked (title=%r, status=%s) — skipping %s", title, status, url)
             return
 

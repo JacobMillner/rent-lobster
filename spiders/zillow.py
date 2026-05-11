@@ -14,10 +14,13 @@ from crawlee.proxy_configuration import ProxyConfiguration
 from config import Settings
 from db import upsert_listing
 from models import Listing, scan_amenities, _SQFT_RE
+from spiders._common import is_blocked_title
 from spiders._stealth import inject_stealth, stealth_context_options
 
 log = logging.getLogger(__name__)
 
+# These two regexes are still re-used in this file's own helpers below, so we keep
+# them as module-locals. New shared parsing should use spiders._common.
 _PRICE_RE = re.compile(r"\$([\d,]+)")
 _BED_RE = re.compile(r"(\d+)\s*(?:bed|bd|br)\b", re.IGNORECASE)
 _BATH_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:bath|ba)\b", re.IGNORECASE)
@@ -79,8 +82,10 @@ def build_zillow_crawler(
 
         page = context.page
 
-        delay = random.uniform(3.0, 8.0)
-        await asyncio.sleep(delay)
+        if settings.spider_max_delay > 0:
+            lo = max(0.0, settings.spider_min_delay)
+            hi = max(lo, settings.spider_max_delay)
+            await asyncio.sleep(random.uniform(lo, hi))
 
         try:
             await page.wait_for_load_state("domcontentloaded", timeout=15_000)
@@ -97,10 +102,7 @@ def build_zillow_crawler(
         log.info("[zillow] Page loaded: title=%r, status=%s", title, status)
 
         # Detect block/challenge pages — skip immediately
-        blocked = any(kw in title.lower() for kw in (
-            "access denied", "blocked", "captcha", "just a moment", "robot", "denied",
-        ))
-        if blocked:
+        if is_blocked_title(title):
             log.warning("[zillow] Blocked (title=%r, status=%s) — skipping %s", title, status, url)
             return
 

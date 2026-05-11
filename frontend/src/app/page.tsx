@@ -1,42 +1,7 @@
 "use client";
 
 import ListingFinder from "@/components/ListingFinder";
-import type { ListingFinderConfig } from "@/types";
-
-const RENTAL_CONFIG: ListingFinderConfig = {
-  listingType: "rental",
-  title: "Rent Lobster",
-  subtitle: "Apartment Listing Aggregator",
-  priceLabel: "Max rent",
-  showNoFee: true,
-  showHoa: false,
-  appliedLabel: "Mark Applied",
-  appliedActiveLabel: "Application Submitted",
-  editableFields: [
-    { key: "price", label: "Price", type: "number" },
-    { key: "beds", label: "Beds", type: "number" },
-    { key: "baths", label: "Baths", type: "number" },
-    { key: "sqft", label: "Sq Ft", type: "number" },
-    { key: "floor", label: "Floor", type: "text" },
-    { key: "available_date", label: "Available", type: "text" },
-    { key: "address", label: "Address", type: "text" },
-    { key: "neighborhood", label: "Neighborhood", type: "text" },
-    { key: "contact_name", label: "Contact Name", type: "text" },
-    { key: "contact_phone", label: "Contact Phone", type: "text" },
-    { key: "contact_email", label: "Contact Email", type: "text" },
-    { key: "subway_minutes", label: "Min to Subway", type: "number" },
-    { key: "nearest_subway", label: "Nearest Subway", type: "text" },
-  ],
-  amenityLabels: {
-    has_dishwasher: "Dishwasher",
-    has_balcony: "Balcony",
-    has_doorman: "Doorman",
-    has_elevator: "Elevator",
-    has_gym: "Gym",
-    pets_allowed: "Pets OK",
-    no_fee: "No Fee",
-  },
-};
+import { RENTAL_CONFIG } from "@/configs";
 
 export default function Home() {
   return <ListingFinder config={RENTAL_CONFIG} />;
