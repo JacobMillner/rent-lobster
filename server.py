@@ -30,6 +30,7 @@ from db import (
     touch_saved_search,
     update_listing,
 )
+from nyc_locations import all_locations
 from proxy_manager import proxy_manager
 from worker import IMAGES_DIR, THUMBNAIL_DIR, crawl_manager, geocoding_worker, image_worker, thumbnail_worker
 
@@ -147,10 +148,24 @@ def api_stats(listing_type: str = Query("rental")) -> dict:
 
 # ---- Crawl control API ----------------------------------------------------
 
+class CrawlLocationPayload(BaseModel):
+    borough: str
+    neighborhood: str | None = None
+
+
+class CrawlFiltersPayload(BaseModel):
+    min_beds: int | None = None
+    min_baths: float | None = None
+    max_price: int | None = None
+    min_price: int | None = None
+
+
 class CrawlRequest(BaseModel):
     spiders: list[str]
     max_pages: int = 50
     listing_type: str = "rental"
+    location: CrawlLocationPayload | None = None
+    filters: CrawlFiltersPayload | None = None
 
 
 @app.post("/api/crawl")
@@ -159,11 +174,26 @@ def api_crawl_start(req: CrawlRequest) -> dict:
     chosen = [s for s in req.spiders if s in valid]
     if not chosen:
         raise HTTPException(400, "No valid spiders selected")
+    if req.location is None:
+        raise HTTPException(400, "A NYC borough is required")
     try:
-        job = crawl_manager.start(chosen, req.max_pages, listing_type=req.listing_type)
+        job = crawl_manager.start(
+            chosen,
+            req.max_pages,
+            listing_type=req.listing_type,
+            location=req.location.model_dump(),
+            filters=(req.filters.model_dump() if req.filters else None),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
     return job.to_dict()
+
+
+@app.get("/api/locations")
+def api_locations() -> dict:
+    return all_locations()
 
 
 @app.get("/api/crawl/status")

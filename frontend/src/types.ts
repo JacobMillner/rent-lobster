@@ -61,6 +61,34 @@ export interface Stats {
   max_price: number | null;
 }
 
+export interface Borough {
+  id: string;
+  name: string;
+}
+
+export interface Neighborhood {
+  id: string;
+  name: string;
+  borough: string;
+}
+
+export interface LocationCatalog {
+  boroughs: Borough[];
+  neighborhoods: Neighborhood[];
+}
+
+export interface CrawlLocation {
+  borough: string;
+  neighborhood?: string | null;
+}
+
+export interface CrawlFilters {
+  min_beds?: number | null;
+  min_baths?: number | null;
+  max_price?: number | null;
+  min_price?: number | null;
+}
+
 export interface CrawlStatus {
   id?: string;
   status: string;
@@ -71,6 +99,8 @@ export interface CrawlStatus {
   listings_found?: number;
   current_spider?: string | null;
   error?: string | null;
+  location?: CrawlLocation | null;
+  filters?: CrawlFilters | null;
 }
 
 export interface MapListing {

@@ -1,4 +1,5 @@
-from apt_scout.config import Settings
+from config import Settings
+
 
 def test_settings_loads():
     s = Settings()

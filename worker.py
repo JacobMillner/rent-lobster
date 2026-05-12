@@ -14,6 +14,7 @@ import httpx
 from PIL import Image
 
 from db import get_images_needing_download, get_listings_needing_geocoding, get_listings_needing_thumbnails, mark_geocode_failed, update_coordinates, update_image_path, update_thumbnail_path
+from nyc_locations import BOROUGHS_BY_ID, CrawlFilters, CrawlLocation, build_start_urls
 
 MIN_IMAGE_DIMENSION = 200
 
@@ -48,6 +49,8 @@ class CrawlJob:
     spiders: list[str] = field(default_factory=list)
     max_pages: int = 50
     listing_type: str = "rental"
+    location: dict | None = None
+    filters: dict | None = None
     pages_crawled: int = 0
     listings_found: int = 0
     current_spider: str | None = None
@@ -64,6 +67,8 @@ class CrawlJob:
                 "spiders": self.spiders,
                 "max_pages": self.max_pages,
                 "listing_type": self.listing_type,
+                "location": self.location,
+                "filters": self.filters,
                 "pages_crawled": self.pages_crawled,
                 "listings_found": self.listings_found,
                 "current_spider": self.current_spider,
@@ -106,11 +111,31 @@ class CrawlManager:
     def current_job(self) -> CrawlJob | None:
         return self._current
 
-    def start(self, spiders: list[str], max_pages: int, listing_type: str = "rental") -> CrawlJob:
+    def start(
+        self,
+        spiders: list[str],
+        max_pages: int,
+        listing_type: str = "rental",
+        location: dict | None = None,
+        filters: dict | None = None,
+    ) -> CrawlJob:
+        # Validate the location eagerly so the API returns a 400 instead of the
+        # job silently erroring out in the background.
+        if location is not None:
+            CrawlLocation(
+                borough=location["borough"],
+                neighborhood=location.get("neighborhood"),
+            ).resolve()
         with self._lock:
             if self._current and self._current.status == "running":
                 raise RuntimeError("A crawl is already running")
-            job = CrawlJob(spiders=list(spiders), max_pages=max_pages, listing_type=listing_type)
+            job = CrawlJob(
+                spiders=list(spiders),
+                max_pages=max_pages,
+                listing_type=listing_type,
+                location=location,
+                filters=filters,
+            )
             self._current = job
             asyncio.run_coroutine_threadsafe(self._crawl_wrapper(job), self._loop)
             return job
@@ -157,9 +182,46 @@ class CrawlManager:
     async def _crawl(self, job: CrawlJob) -> None:
         from crawlee import Request as CrawleeRequest
         from config import Settings
+        import dataclasses
 
         settings = Settings()
         is_sale = job.listing_type == "sale"
+
+        # If the job has explicit location + filters from the UI, build the
+        # search URLs dynamically and override the matches() filter thresholds
+        # so the per-listing filter agrees with what the URL asked for.
+        built_urls: dict[str, list[str]] = {}
+        if job.location is not None:
+            location = CrawlLocation(
+                borough=job.location["borough"],
+                neighborhood=job.location.get("neighborhood"),
+            )
+            filters = CrawlFilters.from_dict(job.filters)
+            built_urls = build_start_urls(
+                location,
+                listing_type=job.listing_type,
+                filters=filters,
+                spiders=job.spiders,
+            )
+
+            overrides: dict = {}
+            if filters.min_beds is not None:
+                if is_sale:
+                    overrides["sale_min_beds"] = filters.min_beds
+                else:
+                    overrides["min_beds"] = filters.min_beds
+            if filters.min_baths is not None:
+                if is_sale:
+                    overrides["sale_min_baths"] = int(filters.min_baths)
+                else:
+                    overrides["min_baths"] = int(filters.min_baths)
+            if filters.max_price is not None:
+                if is_sale:
+                    overrides["max_sale_price"] = filters.max_price
+                else:
+                    overrides["max_rent"] = filters.max_price
+            if overrides:
+                settings = dataclasses.replace(settings, **overrides)
 
         for spider_name in job.spiders:
             job.current_spider = spider_name
@@ -167,8 +229,16 @@ class CrawlManager:
             config = self._spider_config(spider_name)
             log.info("[worker] Starting spider %s (listing_type=%s)", spider_name, job.listing_type)
 
+            # Gate StreetEasy to NYC boroughs only.
+            if spider_name == "streeteasy" and job.location is not None:
+                if job.location["borough"] not in BOROUGHS_BY_ID:
+                    log.info("[worker] Skipping streeteasy: borough %r is not NYC", job.location["borough"])
+                    continue
+
             if spider_name == "craigslist":
-                start_urls = settings.craigslist_sale_start_urls if is_sale else settings.craigslist_start_urls
+                start_urls = built_urls.get("craigslist") or (
+                    settings.craigslist_sale_start_urls if is_sale else settings.craigslist_start_urls
+                )
                 if start_urls:
                     from spiders.craigslist import build_craigslist_crawler
 
@@ -192,7 +262,9 @@ class CrawlManager:
                     await c.run(requests)
 
             elif spider_name == "streeteasy":
-                start_urls = settings.streeteasy_sale_start_urls if is_sale else settings.streeteasy_start_urls
+                start_urls = built_urls.get("streeteasy") or (
+                    settings.streeteasy_sale_start_urls if is_sale else settings.streeteasy_start_urls
+                )
                 if start_urls:
                     from spiders.streeteasy import build_streeteasy_crawler
 
@@ -212,7 +284,9 @@ class CrawlManager:
                     await s.run(requests)
 
             elif spider_name == "zillow":
-                start_urls = settings.zillow_sale_start_urls if is_sale else settings.zillow_start_urls
+                start_urls = built_urls.get("zillow") or (
+                    settings.zillow_sale_start_urls if is_sale else settings.zillow_start_urls
+                )
                 if start_urls:
                     from spiders.zillow import build_zillow_crawler
 

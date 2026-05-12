@@ -6,7 +6,7 @@ UV_BIN ?= $(HOME)/.local/bin/uv
 FRONTEND_DIR := frontend
 STATIC_OUT := $(FRONTEND_DIR)/out
 
-.PHONY: help install uv sync playwright install-browsers run test lint fmt typecheck check clean \
+.PHONY: help install uv sync playwright install-browsers run test test-scrapers lint fmt typecheck check clean \
         frontend frontend-install server
 
 help:
@@ -64,6 +64,12 @@ server: sync frontend
 # ---- QA ----
 test: sync
 	uv run pytest -q
+
+# Live, opt-in integration tests that drive each spider against the real site.
+# See AGENTS.md — run this after touching anything under spiders/, worker.py,
+# or nyc_locations.py.
+test-scrapers: sync
+	uv run pytest -m live -s tests/test_scrapers_live.py
 
 lint: sync
 	uv run ruff check .

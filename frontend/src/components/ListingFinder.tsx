@@ -10,6 +10,9 @@ import type {
   MapListing,
   ListingFinderConfig,
   SavedSearch,
+  LocationCatalog,
+  Borough,
+  Neighborhood,
 } from "@/types";
 import { s } from "@/styles";
 import DetailModal from "./DetailModal";
@@ -360,6 +363,13 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
   const [crawlStatus, setCrawlStatus] = useState<CrawlStatus | null>(null);
   const [starting, setStarting] = useState(false);
 
+  const [locationCatalog, setLocationCatalog] = useState<LocationCatalog>({ boroughs: [], neighborhoods: [] });
+  const [crawlBorough, setCrawlBorough] = useState("brooklyn");
+  const [crawlNeighborhood, setCrawlNeighborhood] = useState("");
+  const [crawlMinBeds, setCrawlMinBeds] = useState("");
+  const [crawlMinBaths, setCrawlMinBaths] = useState("");
+  const [crawlMaxPrice, setCrawlMaxPrice] = useState("");
+
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const [mapListings, setMapListings] = useState<MapListing[]>([]);
 
@@ -438,6 +448,23 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
     } catch { /* ignore */ }
   }, [lt]);
 
+  const fetchLocations = useCallback(async () => {
+    try {
+      const res = await fetch("/api/locations");
+      if (res.ok) setLocationCatalog(await res.json());
+    } catch { /* ignore */ }
+  }, []);
+
+  const neighborhoodsInBorough = useMemo<Neighborhood[]>(
+    () => locationCatalog.neighborhoods.filter((n) => n.borough === crawlBorough),
+    [locationCatalog.neighborhoods, crawlBorough],
+  );
+
+  const handleBoroughChange = (b: string) => {
+    setCrawlBorough(b);
+    setCrawlNeighborhood("");
+  };
+
   const currentFilters = (): SavedSearch["filters"] => ({
     source: filterSource || undefined,
     max_price: filterMaxPrice || undefined,
@@ -494,7 +521,8 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
     fetchMeta();
     fetchCrawlStatus();
     fetchSavedSearches();
-  }, [fetchListings, fetchMeta, fetchCrawlStatus, fetchSavedSearches]);
+    fetchLocations();
+  }, [fetchListings, fetchMeta, fetchCrawlStatus, fetchSavedSearches, fetchLocations]);
 
   useEffect(() => {
     if (viewMode === "map") fetchMapListings();
@@ -537,7 +565,19 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
 
   const startCrawl = async () => {
     if (selectedSpiders.size === 0) return;
+    if (!crawlBorough) {
+      setError("Pick a borough before starting a crawl");
+      return;
+    }
     setStarting(true);
+    const toIntOrNull = (s: string): number | null => {
+      const n = parseInt(s, 10);
+      return Number.isFinite(n) ? n : null;
+    };
+    const toFloatOrNull = (s: string): number | null => {
+      const n = parseFloat(s);
+      return Number.isFinite(n) ? n : null;
+    };
     try {
       const res = await fetch("/api/crawl", {
         method: "POST",
@@ -546,6 +586,15 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
           spiders: [...selectedSpiders],
           max_pages: parseInt(maxPages) || 50,
           listing_type: lt,
+          location: {
+            borough: crawlBorough,
+            neighborhood: crawlNeighborhood || null,
+          },
+          filters: {
+            min_beds: toIntOrNull(crawlMinBeds),
+            min_baths: toFloatOrNull(crawlMinBaths),
+            max_price: toIntOrNull(crawlMaxPrice),
+          },
         }),
       });
       if (!res.ok) {
@@ -630,6 +679,80 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
                 {isRunning ? "Crawling\u2026" : starting ? "Starting\u2026" : "Start Crawl"}
               </button>
             </div>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 12,
+              marginTop: 12,
+            }}
+          >
+            <label style={s.inlineLabel}>
+              Borough
+              <select
+                style={{ ...s.select, minWidth: 140 }}
+                value={crawlBorough}
+                onChange={(e) => handleBoroughChange(e.target.value)}
+              >
+                {locationCatalog.boroughs.length === 0 ? (
+                  <option value="brooklyn">Brooklyn</option>
+                ) : (
+                  locationCatalog.boroughs.map((b: Borough) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))
+                )}
+              </select>
+            </label>
+            <label style={s.inlineLabel}>
+              Neighborhood
+              <select
+                style={{ ...s.select, minWidth: 180 }}
+                value={crawlNeighborhood}
+                onChange={(e) => setCrawlNeighborhood(e.target.value)}
+              >
+                <option value="">All in borough</option>
+                {neighborhoodsInBorough.map((n) => (
+                  <option key={n.id} value={n.id}>{n.name}</option>
+                ))}
+              </select>
+            </label>
+            <label style={s.inlineLabel}>
+              Min beds
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={crawlMinBeds}
+                onChange={(e) => setCrawlMinBeds(e.target.value)}
+                style={{ ...s.input, width: 70 }}
+              />
+            </label>
+            <label style={s.inlineLabel}>
+              Min baths
+              <input
+                type="number"
+                min={0}
+                max={10}
+                step={0.5}
+                value={crawlMinBaths}
+                onChange={(e) => setCrawlMinBaths(e.target.value)}
+                style={{ ...s.input, width: 70 }}
+              />
+            </label>
+            <label style={s.inlineLabel}>
+              {config.priceLabel}
+              <input
+                type="number"
+                min={0}
+                placeholder={config.listingType === "sale" ? "1500000" : "4500"}
+                value={crawlMaxPrice}
+                onChange={(e) => setCrawlMaxPrice(e.target.value)}
+                style={{ ...s.input, width: 110 }}
+              />
+            </label>
           </div>
 
           {crawlStatus && crawlStatus.status !== "idle" && (
