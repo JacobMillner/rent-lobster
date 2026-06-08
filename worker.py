@@ -156,6 +156,29 @@ class CrawlManager:
 
     @staticmethod
     def _purge_spider_storage(spider_name: str) -> None:
+        # Crawlee's ``StorageInstanceManager`` is a process-wide singleton that
+        # caches RequestQueue (and KeyValueStore) instances keyed by storage_dir.
+        # If we don't drop that cache, the next crawl reuses the previous
+        # crawl's in-memory queue — including its ``state.handled_requests`` set
+        # and its (now-stale) ``total_request_count`` metadata — even though
+        # we've wiped the on-disk storage dir below.
+        #
+        # The symptom of forgetting this is dramatic: the second crawl's start
+        # URL collides with a unique_key already in ``handled_requests`` from
+        # the previous crawl (e.g. craigslist's borough-level URL is the same
+        # for two different neighborhoods), so the new request is silently
+        # dropped as "already handled". Meanwhile ``state.regular_requests``
+        # still has every URL the previous crawl ever enqueued, but the actual
+        # request JSON files on disk are gone. The crawler then loops forever
+        # logging ``Crawled 0/N pages`` because ``is_empty`` says "no, there's
+        # unhandled work" while ``fetch_next_request`` can't actually find any
+        # request files to dispatch.
+        try:
+            from crawlee import service_locator
+            service_locator.storage_instance_manager.clear_cache()
+        except Exception:
+            log.debug("Failed to clear crawlee storage instance cache", exc_info=True)
+
         spider_dir = STORAGE_DIR / spider_name
         for attempt in range(5):
             if not spider_dir.exists():
@@ -220,6 +243,11 @@ class CrawlManager:
                     overrides["max_sale_price"] = filters.max_price
                 else:
                     overrides["max_rent"] = filters.max_price
+            if filters.min_price is not None:
+                if is_sale:
+                    overrides["min_sale_price"] = filters.min_price
+                else:
+                    overrides["min_rent"] = filters.min_price
             if overrides:
                 settings = dataclasses.replace(settings, **overrides)
 

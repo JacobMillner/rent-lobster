@@ -40,8 +40,21 @@ class Listing(BaseModel):
     property_type: str | None = None
     tax_annual: int | None = None
 
-    def matches(self, *, min_beds: int, min_baths: int, max_price: int) -> bool:
+    def matches(
+        self,
+        *,
+        min_beds: int,
+        min_baths: int,
+        max_price: int,
+        min_price: int = 0,
+    ) -> bool:
         if self.price is not None and self.price > max_price:
+            return False
+        # A `min_price` floor is what keeps rent-priced listings from polluting
+        # sale results: rental search pages on Zillow/StreetEasy occasionally
+        # link out to a $3,500/mo card from a sale results page, and without
+        # this guard those would be saved as if they were sale listings.
+        if min_price > 0 and self.price is not None and self.price < min_price:
             return False
         if self.beds is not None and self.beds < min_beds:
             return False

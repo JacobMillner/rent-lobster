@@ -369,6 +369,7 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
   const [crawlMinBeds, setCrawlMinBeds] = useState("");
   const [crawlMinBaths, setCrawlMinBaths] = useState("");
   const [crawlMaxPrice, setCrawlMaxPrice] = useState("");
+  const [crawlMinPrice, setCrawlMinPrice] = useState(config.defaultMinPrice);
 
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const [mapListings, setMapListings] = useState<MapListing[]>([]);
@@ -594,6 +595,7 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
             min_beds: toIntOrNull(crawlMinBeds),
             min_baths: toFloatOrNull(crawlMinBaths),
             max_price: toIntOrNull(crawlMaxPrice),
+            min_price: toIntOrNull(crawlMinPrice),
           },
         }),
       });
@@ -740,6 +742,17 @@ export default function ListingFinder({ config }: { config: ListingFinderConfig 
                 value={crawlMinBaths}
                 onChange={(e) => setCrawlMinBaths(e.target.value)}
                 style={{ ...s.input, width: 70 }}
+              />
+            </label>
+            <label style={s.inlineLabel}>
+              {config.minPriceLabel}
+              <input
+                type="number"
+                min={0}
+                placeholder={config.listingType === "sale" ? "50000" : "0"}
+                value={crawlMinPrice}
+                onChange={(e) => setCrawlMinPrice(e.target.value)}
+                style={{ ...s.input, width: 110 }}
               />
             </label>
             <label style={s.inlineLabel}>

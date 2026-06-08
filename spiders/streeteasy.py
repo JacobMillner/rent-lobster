@@ -575,6 +575,7 @@ def build_streeteasy_crawler(
             min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
             min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
             max_price=settings.max_sale_price if is_sale else settings.max_rent,
+            min_price=settings.min_sale_price if is_sale else settings.min_rent,
         ):
             upsert_listing(listing)
             if on_listing:
@@ -712,6 +713,7 @@ def _save_json_ld_listing(item: dict, settings: Settings, on_listing: Callable |
             min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
             min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
             max_price=settings.max_sale_price if is_sale else settings.max_rent,
+            min_price=settings.min_sale_price if is_sale else settings.min_rent,
         ):
             upsert_listing(listing)
             if on_listing:
@@ -783,6 +785,7 @@ def _save_card_listing(card: dict, settings: Settings, on_listing: Callable | No
             min_beds=settings.sale_min_beds if is_sale else settings.min_beds,
             min_baths=settings.sale_min_baths if is_sale else settings.min_baths,
             max_price=settings.max_sale_price if is_sale else settings.max_rent,
+            min_price=settings.min_sale_price if is_sale else settings.min_rent,
         ):
             upsert_listing(listing)
             if on_listing:

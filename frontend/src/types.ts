@@ -122,6 +122,8 @@ export interface ListingFinderConfig {
   title: string;
   subtitle: string;
   priceLabel: string;
+  minPriceLabel: string;
+  defaultMinPrice: string;
   showNoFee: boolean;
   showHoa: boolean;
   appliedLabel: string;

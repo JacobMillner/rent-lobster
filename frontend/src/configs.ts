@@ -5,6 +5,8 @@ export const RENTAL_CONFIG: ListingFinderConfig = {
   title: "Rent Lobster",
   subtitle: "Apartment Listing Aggregator",
   priceLabel: "Max rent",
+  minPriceLabel: "Min rent",
+  defaultMinPrice: "",
   showNoFee: true,
   showHoa: false,
   appliedLabel: "Mark Applied",
@@ -40,6 +42,11 @@ export const SALE_CONFIG: ListingFinderConfig = {
   title: "Rent Lobster",
   subtitle: "Condo & Real Estate Finder",
   priceLabel: "Max price",
+  minPriceLabel: "Min price",
+  // Rentals priced at $3,000-$5,000/mo occasionally show up on sale results
+  // pages. A $50k floor filters them out without rejecting real cheap buys
+  // (e.g. land lots or storage units would still need an explicit override).
+  defaultMinPrice: "50000",
   showNoFee: false,
   showHoa: true,
   appliedLabel: "Mark Offer Made",

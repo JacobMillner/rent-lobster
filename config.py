@@ -42,10 +42,15 @@ class Settings:
     min_beds: int = _get_int("MIN_BEDS", 3)
     min_baths: int = _get_int("MIN_BATHS", 1)
     max_rent: int = _get_int("MAX_RENT", 6000)
+    min_rent: int = _get_int("MIN_RENT", 0)
 
     sale_min_beds: int = _get_int("SALE_MIN_BEDS", 2)
     sale_min_baths: int = _get_int("SALE_MIN_BATHS", 1)
     max_sale_price: int = _get_int("MAX_SALE_PRICE", 1_500_000)
+    # Cheap "sale" cards on StreetEasy/Zillow are almost always misclassified
+    # rental listings (a few thousand dollars). Default to $50k so they get
+    # filtered out by `Listing.matches()` unless the user explicitly lowers it.
+    min_sale_price: int = _get_int("MIN_SALE_PRICE", 50_000)
 
     zillow_start_urls: list[str] = tuple(_get_urls("ZILLOW_START_URLS"))  # type: ignore
     streeteasy_start_urls: list[str] = tuple(_get_urls("STREETEASY_START_URLS"))  # type: ignore
